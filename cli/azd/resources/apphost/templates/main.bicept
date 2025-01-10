@@ -9,10 +9,23 @@ param environmentName string
 @minLength(1)
 @description('The location used for all deployed resources')
 param location string
-
+{{ if .RequiresPrincipalId }}
+@description('Id of the user or app to assign application roles')
+param principalId string = ''
+{{ end }}
+{{- range $parameter := .WithMetadataParameters }}
+{{- if ne $parameter.MetadataConfig "" }}
+@metadata({azd: {
+  type: '{{$parameter.MetadataType}}'
+  config: {{$parameter.MetadataConfig}}
+  }
+})
+{{- end}}
+{{- if $parameter.Secret }}
 @secure()
-@metadata({azd: {type: 'inputs' }})
-param inputs object
+{{- end}}
+param {{bicepParameterName $parameter.Name}} {{$parameter.Type}}{{bicepParameterValue $parameter.Value}}
+{{- end}}
 
 var tags = {
   'azd-env-name': environmentName
@@ -30,40 +43,57 @@ module resources 'resources.bicep' = {
   params: {
     location: location
     tags: tags
-    inputs: inputs
+{{- if .RequiresPrincipalId }}
+    principalId: principalId
+{{- end }}
+{{- range $parameter := .MainToResourcesParams }}
+    {{bicepParameterName $parameter.Name}}: {{bicepParameterName $parameter.Name}}
+{{- end }}
   }
 }
-
+{{ range $name, $module := .BicepModules }}
+module {{bicepParameterName $name}} '{{ fixBackSlash $module.Path }}' = {
+  name: '{{$name}}'
+  scope: rg
+  params: {
+{{- range $param, $value := $module.Params}}
+    {{$param}}: {{$value}}
+{{- end}}
+  }
+}
+{{- end }}
 output MANAGED_IDENTITY_CLIENT_ID string = resources.outputs.MANAGED_IDENTITY_CLIENT_ID
+output MANAGED_IDENTITY_NAME string = resources.outputs.MANAGED_IDENTITY_NAME
+{{if .HasLogAnalyticsWorkspace -}}
+output AZURE_LOG_ANALYTICS_WORKSPACE_NAME string = resources.outputs.AZURE_LOG_ANALYTICS_WORKSPACE_NAME
+{{end -}}
 {{if .HasContainerRegistry -}}
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = resources.outputs.AZURE_CONTAINER_REGISTRY_ENDPOINT
 output AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID string = resources.outputs.AZURE_CONTAINER_REGISTRY_MANAGED_IDENTITY_ID
+output AZURE_CONTAINER_REGISTRY_NAME string = resources.outputs.AZURE_CONTAINER_REGISTRY_NAME
 {{end -}}
 {{if .HasContainerEnvironment -}}
+output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = resources.outputs.AZURE_CONTAINER_APPS_ENVIRONMENT_NAME
 output AZURE_CONTAINER_APPS_ENVIRONMENT_ID string = resources.outputs.AZURE_CONTAINER_APPS_ENVIRONMENT_ID
 output AZURE_CONTAINER_APPS_ENVIRONMENT_DEFAULT_DOMAIN string = resources.outputs.AZURE_CONTAINER_APPS_ENVIRONMENT_DEFAULT_DOMAIN
 {{end -}}
-{{range $name, $value := .ServiceBuses -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT
+{{range $name, $value := .ContainerApps -}}
+{{range $volume := $value.Volumes -}}
+output SERVICE_{{alphaSnakeUpper $name}}_VOLUME_{{removeDot $volume.Name | alphaSnakeUpper}}_NAME string = resources.outputs.SERVICE_{{alphaSnakeUpper $name}}_VOLUME_{{removeDot $volume.Name | alphaSnakeUpper}}_NAME
 {{end -}}
-{{range $name, $value := .AppInsights -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $name}}_CONNECTION_STRING string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $name}}_CONNECTION_STRING
-{{end -}}
-{{range $name, $value := .StorageAccounts -}}
-{{range $cname := $value.Blobs -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT
-{{end -}}
-{{range $cname := $value.Tables -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT
-{{end -}}
-{{range $cname := $value.Queues -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $cname}}_ENDPOINT
+{{range $bMount := $value.BindMounts -}}
+output SERVICE_{{alphaSnakeUpper $name}}_VOLUME_{{removeDot $bMount.Name | alphaSnakeUpper}}_NAME string = resources.outputs.SERVICE_{{alphaSnakeUpper $name}}_VOLUME_{{removeDot $bMount.Name | alphaSnakeUpper}}_NAME
+output SERVICE_{{alphaSnakeUpper $name}}_FILE_SHARE_{{removeDot $bMount.Name | alphaSnakeUpper}}_NAME string = resources.outputs.SERVICE_{{alphaSnakeUpper $name}}_FILE_SHARE_{{removeDot $bMount.Name | alphaSnakeUpper}}_NAME
 {{end -}}
 {{end -}}
 {{range $name, $value := .KeyVaults -}}
 output SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT
+output SERVICE_BINDING_{{alphaSnakeUpper $name}}_NAME string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $name}}_NAME
 {{end -}}
-{{range $name, $value := .CosmosDbAccounts -}}
-output SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT string = resources.outputs.SERVICE_BINDING_{{alphaSnakeUpper $name}}_ENDPOINT
+{{range $param, $value := .OutputParameters -}}
+output {{bicepParameterName $param}} {{$value.Type}} = {{bicepParameterName $value.Value}}
+{{end -}}
+{{if .RequiresStorageVolume -}}
+output AZURE_VOLUMES_STORAGE_ACCOUNT string = resources.outputs.AZURE_VOLUMES_STORAGE_ACCOUNT
 {{end -}}
 {{ end}}

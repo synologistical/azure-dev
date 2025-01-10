@@ -5,7 +5,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -54,7 +53,7 @@ func main() {
 
 	// staticHelp is true to inform commands to use generate help text instead
 	// of generating help text that includes execution-specific state.
-	cmd := azd.NewRootCmd(context.Background(), true, nil)
+	cmd := azd.NewRootCmd(true, nil, nil)
 
 	basename := strings.Replace(cmd.CommandPath(), " ", "_", -1) + ".md"
 	filename := filepath.Join("./md", basename)
@@ -277,7 +276,7 @@ func genMarkdownCustom(cmd *cobra.Command, w io.Writer, linkHandler func(string)
 }
 
 // printOptions is the same as the un-exported helper from spf13/cobra/docs@v1.3.0
-func printOptions(buf *bytes.Buffer, cmd *cobra.Command, name string) error {
+func printOptions(buf *bytes.Buffer, cmd *cobra.Command, _ string) error {
 	flags := cmd.NonInheritedFlags()
 	flags.SetOutput(buf)
 	if flags.HasAvailableFlags() {

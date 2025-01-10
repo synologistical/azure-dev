@@ -24,13 +24,13 @@ import (
 
 type infraSynthFlags struct {
 	global *internal.GlobalCommandOptions
-	*envFlag
+	*internal.EnvFlag
 	force bool
 }
 
 func newInfraSynthFlags(cmd *cobra.Command, global *internal.GlobalCommandOptions) *infraSynthFlags {
 	flags := &infraSynthFlags{
-		envFlag: &envFlag{},
+		EnvFlag: &internal.EnvFlag{},
 	}
 	flags.Bind(cmd.Flags(), global)
 
@@ -39,7 +39,7 @@ func newInfraSynthFlags(cmd *cobra.Command, global *internal.GlobalCommandOption
 
 func (f *infraSynthFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOptions) {
 	f.global = global
-	f.envFlag.Bind(local, global)
+	f.EnvFlag.Bind(local, global)
 	local.BoolVar(&f.force, "force", false, "Overwrite any existing files without prompting")
 }
 
@@ -47,7 +47,8 @@ func newInfraSynthCmd() *cobra.Command {
 	return &cobra.Command{
 		Use: "synth",
 		Short: fmt.Sprintf(
-			"Write IaC for your project to disk, allowing you to manage it by hand. %s", output.WithWarningFormat("(Beta)")),
+			"Write IaC for your project to disk, allowing you to manage it by hand. %s",
+			output.WithWarningFormat("(Alpha)")),
 	}
 }
 
@@ -84,7 +85,7 @@ func (a *infraSynthAction) Run(ctx context.Context) (*actions.ActionResult, erro
 	if !a.alphaManager.IsEnabled(infraSynthFeature) {
 		return nil, fmt.Errorf(
 			"infrastructure synthesis is currently under alpha support and must be explicitly enabled."+
-				" Run `%s` to enable this feature.", alpha.GetEnableCommand(infraSynthFeature),
+				" Run `%s` to enable this feature", alpha.GetEnableCommand(infraSynthFeature),
 		)
 	}
 

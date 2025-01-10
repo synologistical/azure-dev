@@ -23,6 +23,8 @@ var defaultTemplateSourceData = map[string]interface{}{
 
 func Test_Templates_NewTemplateManager(t *testing.T) {
 	mockContext := mocks.NewMockContext(context.Background())
+	addGhMocks(mockContext)
+
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(
 			NewSourceOptions(),
@@ -42,6 +44,7 @@ func Test_Templates_ListTemplates(t *testing.T) {
 
 	configManager := &mockUserConfigManager{}
 	configManager.On("Load").Return(config.NewConfig(defaultTemplateSourceData), nil)
+	addGhMocks(mockContext)
 
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),
@@ -58,6 +61,39 @@ func Test_Templates_ListTemplates(t *testing.T) {
 	err = json.Unmarshal(resources.TemplatesJson, &storedTemplates)
 	require.NoError(t, err)
 	require.NotEmpty(t, storedTemplates)
+}
+
+func Test_Templates_ListTemplates_WithTagFilter(t *testing.T) {
+	mockContext := mocks.NewMockContext(context.Background())
+	mockAwesomeAzdTemplateSource(mockContext)
+
+	configManager := &mockUserConfigManager{}
+	configManager.On("Load").Return(config.NewConfig(defaultTemplateSourceData), nil)
+	addGhMocks(mockContext)
+
+	templateManager, err := NewTemplateManager(
+		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),
+		mockContext.Console,
+	)
+	require.NoError(t, err)
+
+	t.Run("WithMatchingTags", func(t *testing.T) {
+		listOptions := &ListOptions{
+			Tags: []string{"nodejs", "mongo"},
+		}
+		templates, err := templateManager.ListTemplates(*mockContext.Context, listOptions)
+		require.Len(t, templates, 5)
+		require.Nil(t, err)
+	})
+
+	t.Run("NoMatchingTags", func(t *testing.T) {
+		listOptions := &ListOptions{
+			Tags: []string{"foo", "bar"},
+		}
+		templates, err := templateManager.ListTemplates(*mockContext.Context, listOptions)
+		require.Len(t, templates, 0)
+		require.Nil(t, err)
+	})
 }
 
 func Test_Templates_ListTemplates_SourceError(t *testing.T) {
@@ -82,6 +118,7 @@ func Test_Templates_ListTemplates_SourceError(t *testing.T) {
 		},
 	})
 	configManager.On("Load").Return(config, nil)
+	addGhMocks(mockContext)
 
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),
@@ -100,6 +137,7 @@ func Test_Templates_GetTemplate_WithValidPath(t *testing.T) {
 	mockContext := mocks.NewMockContext(context.Background())
 	configManager := &mockUserConfigManager{}
 	configManager.On("Load").Return(config.NewConfig(defaultTemplateSourceData), nil)
+	addGhMocks(mockContext)
 
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),
@@ -122,6 +160,7 @@ func Test_Templates_GetTemplate_WithInvalidPath(t *testing.T) {
 	mockContext := mocks.NewMockContext(context.Background())
 	configManager := &mockUserConfigManager{}
 	configManager.On("Load").Return(config.NewConfig(defaultTemplateSourceData), nil)
+	addGhMocks(mockContext)
 
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),
@@ -140,6 +179,7 @@ func Test_Templates_GetTemplate_WithNotFoundPath(t *testing.T) {
 	mockContext := mocks.NewMockContext(context.Background())
 	configManager := &mockUserConfigManager{}
 	configManager.On("Load").Return(config.NewConfig(defaultTemplateSourceData), nil)
+	addGhMocks(mockContext)
 
 	templateManager, err := NewTemplateManager(
 		NewSourceManager(NewSourceOptions(), mockContext.Container, configManager, mockContext.HttpClient),

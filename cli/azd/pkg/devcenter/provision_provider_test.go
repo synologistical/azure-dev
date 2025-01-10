@@ -9,14 +9,13 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resourcegraph/armresourcegraph"
 	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
-	"github.com/azure/azure-dev/cli/azd/pkg/azsdk"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/convert"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
-	"github.com/azure/azure-dev/cli/azd/pkg/tools/azcli"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 	"github.com/azure/azure-dev/cli/azd/test/mocks/mockdevcentersdk"
 	"github.com/azure/azure-dev/cli/azd/test/mocks/mockenv"
@@ -100,7 +99,10 @@ func Test_ProvisionProvider_Deploy(t *testing.T) {
 
 		manager := &mockDevCenterManager{}
 		manager.
-			On("Outputs", *mockContext.Context, mock.AnythingOfType("*devcentersdk.Environment")).
+			On("Outputs",
+				*mockContext.Context,
+				mock.AnythingOfType("*devcenter.Config"),
+				mock.AnythingOfType("*devcentersdk.Environment")).
 			Return(outputParams, nil)
 
 		mockdevcentersdk.MockDevCenterGraphQuery(mockContext, mockDevCenterList)
@@ -165,7 +167,10 @@ func Test_ProvisionProvider_Deploy(t *testing.T) {
 
 		manager := &mockDevCenterManager{}
 		manager.
-			On("Outputs", *mockContext.Context, mock.AnythingOfType("*devcentersdk.Environment")).
+			On("Outputs",
+				*mockContext.Context,
+				mock.AnythingOfType("*devcenter.Config"),
+				mock.AnythingOfType("*devcentersdk.Environment")).
 			Return(outputParams, nil)
 
 		mockdevcentersdk.MockDevCenterGraphQuery(mockContext, mockDevCenterList)
@@ -272,7 +277,10 @@ func Test_ProvisionProvider_State(t *testing.T) {
 
 		manager := &mockDevCenterManager{}
 		manager.
-			On("Outputs", *mockContext.Context, mock.AnythingOfType("*devcentersdk.Environment")).
+			On("Outputs",
+				*mockContext.Context,
+				mock.AnythingOfType("*devcenter.Config"),
+				mock.AnythingOfType("*devcentersdk.Environment")).
 			Return(outputParams, nil)
 
 		mockdevcentersdk.MockDevCenterGraphQuery(mockContext, mockDevCenterList)
@@ -320,7 +328,10 @@ func Test_ProvisionProvider_State(t *testing.T) {
 
 		manager := &mockDevCenterManager{}
 		manager.
-			On("Outputs", *mockContext.Context, mock.AnythingOfType("*devcentersdk.Environment")).
+			On("Outputs",
+				*mockContext.Context,
+				mock.AnythingOfType("*devcenter.Config"),
+				mock.AnythingOfType("*devcentersdk.Environment")).
 			Return(nil, errors.New("no outputs"))
 
 		mockdevcentersdk.MockDevCenterGraphQuery(mockContext, mockDevCenterList)
@@ -371,7 +382,10 @@ func Test_ProvisionProvider_Destroy(t *testing.T) {
 
 		manager := &mockDevCenterManager{}
 		manager.
-			On("Outputs", *mockContext.Context, mock.AnythingOfType("*devcentersdk.Environment")).
+			On("Outputs",
+				*mockContext.Context,
+				mock.AnythingOfType("*devcenter.Config"),
+				mock.AnythingOfType("*devcentersdk.Environment")).
 			Return(outputParams, nil)
 
 		provider := newProvisionProviderForTest(t, mockContext, config, env, manager)
@@ -436,30 +450,34 @@ func newProvisionProviderForTest(
 	env *environment.Environment,
 	manager Manager,
 ) provisioning.Provider {
-	coreOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildCoreClientOptions()
-
-	armOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildArmClientOptions()
-
-	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, armOptions)
+	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, mockContext.ArmClientOptions)
 	require.NoError(t, err)
 
 	devCenterClient, err := devcentersdk.NewDevCenterClient(
 		mockContext.Credentials,
-		coreOptions,
+		mockContext.CoreClientOptions,
 		resourceGraphClient,
+		cloud.AzurePublic(),
 	)
 
 	require.NoError(t, err)
 
-	azCli := azcli.NewAzCli(mockContext.SubscriptionCredentialProvider, mockContext.HttpClient, azcli.NewAzCliArgs{})
-	resourceManager := infra.NewAzureResourceManager(
-		azCli,
-		azapi.NewDeploymentOperations(mockContext.SubscriptionCredentialProvider, mockContext.HttpClient),
+	resourceService := azapi.NewResourceService(mockContext.SubscriptionCredentialProvider, mockContext.ArmClientOptions)
+
+	deploymentService := azapi.NewStandardDeployments(
+		mockContext.SubscriptionCredentialProvider,
+		mockContext.ArmClientOptions,
+		resourceService,
+		cloud.AzurePublic(),
+		mockContext.Clock,
 	)
+
+	resourceManager := infra.NewAzureResourceManager(
+		resourceService,
+		deploymentService,
+	)
+
+	deploymentManager := infra.NewDeploymentManager(deploymentService, resourceManager, mockContext.Console)
 
 	if manager == nil {
 		manager = &mockDevCenterManager{}
@@ -468,7 +486,7 @@ func newProvisionProviderForTest(
 	envManager := &mockenv.MockEnvManager{}
 	envManager.On("Save", *mockContext.Context, env).Return(nil)
 
-	prompter := NewPrompter(config, mockContext.Console, manager, devCenterClient)
+	prompter := NewPrompter(mockContext.Console, manager, devCenterClient)
 
 	return NewProvisionProvider(
 		mockContext.Console,
@@ -476,7 +494,7 @@ func newProvisionProviderForTest(
 		envManager,
 		config,
 		devCenterClient,
-		resourceManager,
+		deploymentManager,
 		manager,
 		prompter,
 	)

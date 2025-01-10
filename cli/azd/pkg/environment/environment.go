@@ -43,6 +43,9 @@ const AksClusterEnvVarName = "AZURE_AKS_CLUSTER_NAME"
 // ResourceGroupEnvVarName is the name of the azure resource group that should be used for deployments
 const ResourceGroupEnvVarName = "AZURE_RESOURCE_GROUP"
 
+// PlatformTypeEnvVarName is the name of the key used to store the current azd platform type
+const PlatformTypeEnvVarName = "AZD_PLATFORM_TYPE"
+
 // The zero value of an Environment is not valid. Use [New] to create one. When writing tests,
 // [Ephemeral] and [EphemeralWithValues] are useful to create environments which are not persisted to disk.
 type Environment struct {
@@ -214,18 +217,19 @@ func (e *Environment) SetLocation(location string) {
 	e.DotenvSet(LocationEnvVarName, location)
 }
 
-func normalize(key string) string {
-	return strings.ReplaceAll(strings.ToUpper(key), "-", "_")
+// Key returns the environment key name for the given name.
+func Key(name string) string {
+	return strings.ReplaceAll(strings.ToUpper(name), "-", "_")
 }
 
 // GetServiceProperty is shorthand for Getenv(SERVICE_$SERVICE_NAME_$PROPERTY_NAME)
 func (e *Environment) GetServiceProperty(serviceName string, propertyName string) string {
-	return e.Getenv(fmt.Sprintf("SERVICE_%s_%s", normalize(serviceName), propertyName))
+	return e.Getenv(fmt.Sprintf("SERVICE_%s_%s", Key(serviceName), propertyName))
 }
 
 // Sets the value of a service-namespaced property in the environment.
 func (e *Environment) SetServiceProperty(serviceName string, propertyName string, value string) {
-	e.DotenvSet(fmt.Sprintf("SERVICE_%s_%s", normalize(serviceName), propertyName), value)
+	e.DotenvSet(fmt.Sprintf("SERVICE_%s_%s", Key(serviceName), propertyName), value)
 }
 
 // Creates a slice of key value pairs, based on the entries in the `.env` file like `KEY=VALUE` that

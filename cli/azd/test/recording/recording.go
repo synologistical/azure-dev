@@ -26,13 +26,14 @@ import (
 	"time"
 
 	"github.com/azure/azure-dev/cli/azd/test/cmdrecord"
+	"github.com/braydonk/yaml"
 	"gopkg.in/dnaeon/go-vcr.v3/cassette"
 	"gopkg.in/dnaeon/go-vcr.v3/recorder"
-	"gopkg.in/yaml.v3"
 )
 
 type recordOptions struct {
-	mode recorder.Mode
+	mode        recorder.Mode
+	hostMapping map[string]string
 }
 
 type Options interface {
@@ -52,6 +53,28 @@ func (in modeOption) Apply(out recordOptions) recordOptions {
 	return out
 }
 
+// WithHostMapping allows mapping one host to another in a recording. This is useful in cases where you are using
+// [httptest.NewServer] in a recorded test, since the host for the server differs across runs due to the randomly assigned
+// port. In this case you can call WithHostMapping(strings.TrimPrefix(server.URL, "http://"), "127.0.0.1:80") to ensure
+// that in the recording the host is always set to the same value.
+func WithHostMapping(from, to string) Options {
+	return hostMappingOption{from: from, to: to}
+}
+
+type hostMappingOption struct {
+	from string
+	to   string
+}
+
+func (in hostMappingOption) Apply(out recordOptions) recordOptions {
+	if out.hostMapping == nil {
+		out.hostMapping = map[string]string{}
+	}
+
+	out.hostMapping[in.from] = in.to
+	return out
+}
+
 const EnvNameKey = "env_name"
 const TimeKey = "time"
 const SubscriptionIdKey = "subscription_id"
@@ -60,8 +83,8 @@ type Session struct {
 	// ProxyUrl is the URL of the proxy server that will be recording or replaying interactions.
 	ProxyUrl string
 
-	// CmdProxyPath is the path that should be appended to PATH to proxy any cmd invocations.
-	CmdProxyPath string
+	// CmdProxyPaths are the paths that should be appended to PATH to proxy any cmd invocations.
+	CmdProxyPaths []string
 
 	// If true, playing back from recording.
 	Playback bool
@@ -186,6 +209,12 @@ func Start(t *testing.T, opts ...Options) *Session {
 			return r.Method == i.Method && r.URL.String() == recorded.String()
 		}
 
+		if opt.hostMapping != nil {
+			if to, has := opt.hostMapping[r.URL.Host]; has {
+				r.URL.Host = to
+			}
+		}
+
 		return cassette.DefaultMatcher(r, i)
 	})
 
@@ -197,6 +226,23 @@ func Start(t *testing.T, opts ...Options) *Session {
 	vcr.AddHook(func(i *cassette.Interaction) error {
 		return TrimSubscriptionsDeployment(i, session.Variables)
 	}, recorder.BeforeSaveHook)
+
+	vcr.AddHook(func(i *cassette.Interaction) error {
+		if opt.hostMapping == nil {
+			return nil
+		}
+
+		if to, has := opt.hostMapping[i.Request.Host]; has {
+			oldHost := i.Request.Host
+
+			i.Request.Host = to
+			i.Request.RemoteAddr = to
+			i.Request.URL = strings.Replace(i.Request.URL, oldHost, to, 1)
+			i.Request.RequestURI = strings.Replace(i.Request.RequestURI, oldHost, to, 1)
+		}
+
+		return nil
+	}, recorder.AfterCaptureHook)
 
 	// Sanitize
 	vcr.AddHook(func(i *cassette.Interaction) error {
@@ -215,6 +261,21 @@ func Start(t *testing.T, opts ...Options) *Session {
 		err = sanitizeContainerAppUpdate(i)
 		if err != nil {
 			log.Error("failed to sanitize container app update", "error", err)
+		}
+
+		err = sanitizeBlobStorageSasSig(i)
+		if err != nil {
+			log.Error("failed to sanitize blob storage SAS signature", "error", err)
+		}
+
+		err = sanitizeContainerRegistryListBuildSourceUploadUrl(i)
+		if err != nil {
+			log.Error("failed to sanitize list build source upload url sas signature", "error", err)
+		}
+
+		err = sanitizeContainerRegistryListLogSasUrl(i)
+		if err != nil {
+			log.Error("failed to sanitize list log sas url sas signature", "error", err)
 		}
 
 		return nil
@@ -245,21 +306,29 @@ func Start(t *testing.T, opts ...Options) *Session {
 				strings.Contains(req.URL.Path, "/azure-dev")) ||
 			strings.Contains(req.URL.Host, "azure-dev.azureedge.net") ||
 			strings.Contains(req.URL.Host, "azdrelease.azureedge.net") ||
-			strings.Contains(req.URL.Host, "default.exp-tas.com")
+			strings.Contains(req.URL.Host, "azd-release-gfgac2cmf7b8cuay.b02.azurefd.net") ||
+			strings.Contains(req.URL.Host, "default.exp-tas.com") ||
+			(strings.Contains(req.URL.Host, "dev.azure.com") &&
+				strings.Contains(req.URL.Path, "/oidctoken"))
 	})
 
 	proxy := &connectHandler{
 		Log: log,
 		HttpHandler: &recorderProxy{
 			Log: log,
-			Panic: func(msg string) {
+			Panic: func(req *http.Request, msg string) {
+				if strings.Contains(req.URL.Host, "applicationinsights.azure.com") {
+					return
+				}
+
 				t.Fatal("recorderProxy: " + msg)
 			},
 			Recorder: vcr,
 		},
 	}
 
-	cmdRecorder := cmdrecord.NewWithOptions(cmdrecord.Options{
+	var recorders []*cmdrecord.Recorder
+	recorders = append(recorders, cmdrecord.NewWithOptions(cmdrecord.Options{
 		CmdName:      "docker",
 		CassetteName: name,
 		RecordMode:   opt.mode,
@@ -267,12 +336,23 @@ func Start(t *testing.T, opts ...Options) *Session {
 			{ArgsMatch: "^login"},
 			{ArgsMatch: "^push"},
 		},
-	})
-	path, err := cmdRecorder.Start()
-	if err != nil {
-		t.Fatalf("failed to start cmd recorder: %v", err)
+	}))
+	recorders = append(recorders, cmdrecord.NewWithOptions(cmdrecord.Options{
+		CmdName:      "dotnet",
+		CassetteName: name,
+		RecordMode:   opt.mode,
+		Intercepts: []cmdrecord.Intercept{
+			{ArgsMatch: "^publish(.*?)-p:ContainerRegistry="},
+		},
+	}))
+
+	for _, r := range recorders {
+		path, err := r.Start()
+		if err != nil {
+			t.Fatalf("failed to start cmd recorder: %v", err)
+		}
+		session.CmdProxyPaths = append(session.CmdProxyPaths, path)
 	}
-	session.CmdProxyPath = path
 
 	server := httptest.NewTLSServer(proxy)
 	proxy.TLS = server.TLS
@@ -301,10 +381,13 @@ func Start(t *testing.T, opts ...Options) *Session {
 				}
 			}
 
-			err = cmdRecorder.Stop()
-			if err != nil {
-				t.Fatalf("failed to save cmd recording: %v", err)
+			for _, r := range recorders {
+				err = r.Stop()
+				if err != nil {
+					t.Fatalf("failed to save cmd recording: %v", err)
+				}
 			}
+
 		}
 	})
 
@@ -445,7 +528,7 @@ func (l *logWriter) Write(bytes []byte) (n int, err error) {
 		}
 
 		if b == '\n' {
-			l.t.Logf(l.sb.String())
+			l.t.Logf("%s", l.sb.String())
 			l.sb.Reset()
 		}
 	}

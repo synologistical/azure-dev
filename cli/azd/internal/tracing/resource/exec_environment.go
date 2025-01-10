@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/internal"
+	"github.com/azure/azure-dev/cli/azd/internal/runcontext"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
 )
 
@@ -44,11 +45,15 @@ func execEnvFromCaller() string {
 		return fields.EnvVisualStudioCode
 	}
 
+	if strings.Contains(userAgent, internal.VsAgentPrefix) {
+		return fields.EnvVisualStudio
+	}
+
 	return ""
 }
 
 func execEnvForHosts() string {
-	if _, ok := os.LookupEnv("AZD_IN_CLOUDSHELL"); ok {
+	if _, ok := os.LookupEnv(runcontext.AzdInCloudShellEnvVar); ok {
 		return fields.EnvCloudShell
 	}
 

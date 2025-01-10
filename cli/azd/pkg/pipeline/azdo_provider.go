@@ -8,10 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdo"
+	"github.com/azure/azure-dev/cli/azd/pkg/entraid"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
@@ -19,13 +20,11 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
-	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
-	"github.com/azure/azure-dev/cli/azd/pkg/tools/azcli"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools/git"
-	"github.com/microsoft/azure-devops-go-api/azuredevops"
-	"github.com/microsoft/azure-devops-go-api/azuredevops/build"
-	azdoGit "github.com/microsoft/azure-devops-go-api/azuredevops/git"
+	"github.com/microsoft/azure-devops-go-api/azuredevops/v7"
+	"github.com/microsoft/azure-devops-go-api/azuredevops/v7/build"
+	azdoGit "github.com/microsoft/azure-devops-go-api/azuredevops/v7/git"
 )
 
 // AzdoScmProvider implements ScmProvider using Azure DevOps as the provider
@@ -38,7 +37,7 @@ type AzdoScmProvider struct {
 	azdoConnection *azuredevops.Connection
 	commandRunner  exec.CommandRunner
 	console        input.Console
-	gitCli         git.GitCli
+	gitCli         *git.Cli
 }
 
 func NewAzdoScmProvider(
@@ -47,7 +46,7 @@ func NewAzdoScmProvider(
 	azdContext *azdcontext.AzdContext,
 	commandRunner exec.CommandRunner,
 	console input.Console,
-	gitCli git.GitCli,
+	gitCli *git.Cli,
 ) ScmProvider {
 	return &AzdoScmProvider{
 		envManager:    envManager,
@@ -110,7 +109,7 @@ func (p *AzdoScmProvider) saveEnvironmentConfig(ctx context.Context, key string,
 
 // name returns the name of the provider
 func (p *AzdoScmProvider) Name() string {
-	return "Azure DevOps"
+	return azdoDisplayName
 }
 
 // ***  scmProvider implementation ******
@@ -332,7 +331,7 @@ func (p *AzdoScmProvider) configureGitRemote(
 			return "", err
 		}
 	} else {
-		remoteUrl, err = p.getDefaultRepoRemote(ctx, projectName, projectId, p.console)
+		remoteUrl, err = p.getDefaultRepoRemote(ctx, projectName)
 		if err != nil {
 			return "", err
 		}
@@ -359,8 +358,6 @@ func (p *AzdoScmProvider) getCurrentGitBranch(ctx context.Context, repoPath stri
 func (p *AzdoScmProvider) getDefaultRepoRemote(
 	ctx context.Context,
 	projectName string,
-	projectId string,
-	console input.Console,
 ) (string, error) {
 	connection, err := p.getAzdoConnection(ctx)
 	if err != nil {
@@ -418,12 +415,6 @@ func (p *AzdoScmProvider) promptForAzdoRepository(ctx context.Context, console i
 	return remoteUrl, nil
 }
 
-// defines the structure of an ssl git remote
-var azdoRemoteGitUrlRegex = regexp.MustCompile(`^git@ssh.dev.azure\.com:(.*?)(?:\.git)?$`)
-
-// defines the structure of an HTTPS git remote
-var azdoRemoteHttpsUrlRegex = regexp.MustCompile(`^https://[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*:*.+@dev.azure\.com/(.*?)$`)
-
 // ErrRemoteHostIsNotAzDo the error used when a non Azure DevOps remote is found
 var ErrRemoteHostIsNotAzDo = errors.New("existing remote is not an Azure DevOps host")
 
@@ -431,43 +422,61 @@ var ErrRemoteHostIsNotAzDo = errors.New("existing remote is not an Azure DevOps 
 var ErrSSHNotSupported = errors.New("ssh git remote is not supported. " +
 	"Use HTTPS git remote to connect the remote repository")
 
-// helper function to determine if the provided remoteUrl is an azure devops repo.
-// currently supports AzDo PaaS
-func isAzDoRemote(remoteUrl string) error {
-	if azdoRemoteGitUrlRegex.MatchString(remoteUrl) {
-		return ErrSSHNotSupported
-	}
-	slug := ""
-	for _, r := range []*regexp.Regexp{azdoRemoteGitUrlRegex, azdoRemoteHttpsUrlRegex} {
-		captures := r.FindStringSubmatch(remoteUrl)
-		if captures != nil {
-			slug = captures[1]
-		}
-	}
-	if slug == "" {
-		return ErrRemoteHostIsNotAzDo
-	}
-	return nil
+type azdoRemote struct {
+	Project        string
+	RepositoryName string
 }
 
-func parseAzDoRemote(remoteUrl string) (string, error) {
-	for _, r := range []*regexp.Regexp{azdoRemoteGitUrlRegex, azdoRemoteHttpsUrlRegex} {
-		captures := r.FindStringSubmatch(remoteUrl)
-		if captures != nil {
-			return captures[1], nil
-		}
+// parseAzDoRemote extracts the organization, project and repository name from an Azure DevOps remote url
+// the url can be in the form of:
+//   - https://dev.azure.com/[org|user]/[project]/_git/[repo]
+//   - https://[user]@dev.azure.com/[org|user]/[project]/_git/[repo]
+//   - https://[org].visualstudio.com/[project]/_git/[repo]
+//   - git@ssh.dev.azure.com:v[1-3]/[user|org]/[project]/[repo]
+//   - git@vs-ssh.visualstudio.com:v[1-3]/[user|org]/[project]/[repo]
+//   - git@ssh.visualstudio.com:v[1-3]/[user|org]/[project]/[repo]
+func parseAzDoRemote(remoteUrl string) (*azdoRemote, error) {
+	// Initialize the azdoRemote struct
+	azdoRemote := &azdoRemote{}
+
+	if !strings.Contains(remoteUrl, "visualstudio.com") && !strings.Contains(remoteUrl, "dev.azure.com") {
+		return nil, fmt.Errorf("%w: %s", ErrRemoteHostIsNotAzDo, remoteUrl)
 	}
-	return "", nil
+
+	if strings.Contains(remoteUrl, "/_git/") {
+		// applies to http or https
+		parts := strings.Split(remoteUrl, "/_git/")
+		projectNameStart := strings.LastIndex(parts[0], "/")
+		projectPartLen := len(parts[0])
+
+		if len(parts) != 2 || // remoteUrl must have exactly one "/_git/" substring
+			!strings.Contains(parts[0], "/") || // part 0 (the project) must have more than one "/"
+			projectPartLen <= 1 || // part 0 must be greater than 1 character
+			projectNameStart == projectPartLen-1 { // part 0 must not end with "/"
+			return nil, fmt.Errorf("%w: %s", ErrRemoteHostIsNotAzDo, remoteUrl)
+		}
+
+		azdoRemote.Project = parts[0][projectNameStart+1:]
+		azdoRemote.RepositoryName = parts[1]
+		return azdoRemote, nil
+	}
+
+	if strings.Contains(remoteUrl, "git@") {
+		// applies to git@ -> project and repo always in the last two parts
+		parts := strings.Split(remoteUrl, "/")
+		partsLen := len(parts)
+		azdoRemote.Project = parts[partsLen-2]
+		azdoRemote.RepositoryName = parts[partsLen-1]
+		return azdoRemote, nil
+	}
+
+	// If the remoteUrl does not match any of the supported formats, return an error
+	return nil, fmt.Errorf("%w: %s", ErrRemoteHostIsNotAzDo, remoteUrl)
 }
 
 // gitRepoDetails extracts the information from an Azure DevOps remote url into general scm concepts
 // like owner, name and path
 func (p *AzdoScmProvider) gitRepoDetails(ctx context.Context, remoteUrl string) (*gitRepositoryDetails, error) {
-	err := isAzDoRemote(remoteUrl)
-	if err != nil {
-		return nil, err
-	}
-
 	repoDetails := p.getRepoDetails()
 	// Try getting values from the env.
 	// This is a quick shortcut to avoid parsing the remote in detail.
@@ -496,17 +505,16 @@ func (p *AzdoScmProvider) gitRepoDetails(ctx context.Context, remoteUrl string) 
 	}
 
 	if repoDetails.projectId == "" || repoDetails.repoId == "" {
-		// Removing environment or creating a new one would remove any memory fro project
+		// Removing environment or creating a new one would remove any memory from project
 		// and repo.  In that case, it needs to be calculated from the remote url
-		azdoSlug, err := parseAzDoRemote(remoteUrl)
+		azdoRemote, err := parseAzDoRemote(remoteUrl)
 		if err != nil {
 			return nil, fmt.Errorf("parsing Azure DevOps remote url: %s: %w", remoteUrl, err)
 		}
-		// azdoSlug => Org/Project/_git/repoName
-		parts := strings.Split(azdoSlug, "_git/")
-		repoDetails.projectName = strings.Split(parts[0], "/")[1]
+
+		repoDetails.projectName = azdoRemote.Project
 		p.env.DotenvSet(azdo.AzDoEnvironmentProjectName, repoDetails.projectName)
-		repoDetails.repoName = parts[1]
+		repoDetails.repoName = azdoRemote.RepositoryName
 		p.env.DotenvSet(azdo.AzDoEnvironmentRepoName, repoDetails.repoName)
 
 		connection, err := p.getAzdoConnection(ctx)
@@ -562,7 +570,6 @@ func azdoPat(ctx context.Context, env *environment.Environment, console input.Co
 }
 
 func gitInsteadOfConfig(
-	ctx context.Context,
 	pat string,
 	gitRepo *gitRepositoryDetails) (string, string) {
 
@@ -583,7 +590,7 @@ func (p *AzdoScmProvider) GitPush(
 	// This is the same as gitCli.PushUpstream(), but it adds `-c url.PAT+HostName.insteadOf=HostName` to execute
 	// git push with the PAT to authenticate
 	pat := azdoPat(ctx, p.env, p.console)
-	remoteAndPatUrl, originalUrl := gitInsteadOfConfig(ctx, pat, gitRepo)
+	remoteAndPatUrl, originalUrl := gitInsteadOfConfig(pat, gitRepo)
 	runArgs := exec.NewRunArgsWithSensitiveData("git",
 		[]string{
 			"-C",
@@ -622,7 +629,8 @@ func (p *AzdoScmProvider) GitPush(
 		return err
 	}
 
-	err = azdo.QueueBuild(ctx, connection, p.repoDetails.projectId, p.repoDetails.buildDefinition)
+	err = azdo.QueueBuild(
+		ctx, connection, p.repoDetails.projectId, p.repoDetails.buildDefinition, branchName)
 	if err != nil {
 		return err
 	}
@@ -635,7 +643,7 @@ type AzdoCiProvider struct {
 	envManager    environment.Manager
 	Env           *environment.Environment
 	AzdContext    *azdcontext.AzdContext
-	credentials   *azcli.AzureCredentials
+	credentials   *entraid.AzureCredentials
 	console       input.Console
 	commandRunner exec.CommandRunner
 }
@@ -692,7 +700,7 @@ func (p *AzdoCiProvider) preConfigureCheck(
 
 // name returns the name of the provider.
 func (p *AzdoCiProvider) Name() string {
-	return "Azure DevOps"
+	return azdoDisplayName
 }
 
 // ***  ciProvider implementation ******
@@ -702,17 +710,59 @@ func (p *AzdoCiProvider) credentialOptions(
 	repoDetails *gitRepositoryDetails,
 	infraOptions provisioning.Options,
 	authType PipelineAuthType,
-) *CredentialOptions {
-	if authType == "" || authType == AuthTypeClientCredentials {
+	credentials *entraid.AzureCredentials,
+) (*CredentialOptions, error) {
+	// Default auth type to client-credentials for terraform
+	if infraOptions.Provider == provisioning.Terraform && authType == "" {
+		authType = AuthTypeClientCredentials
+	}
+
+	if authType == AuthTypeClientCredentials {
 		return &CredentialOptions{
 			EnableClientCredentials: true,
+		}, nil
+	}
+
+	// If not specified default to federated credentials
+	if authType == "" || authType == AuthTypeFederated {
+		p.credentials = credentials
+		details := repoDetails.details.(*AzdoRepositoryDetails)
+		org, _, err := azdo.EnsureOrgNameExists(ctx, p.envManager, p.Env, p.console)
+		if err != nil {
+			return nil, err
 		}
+		pat, _, err := azdo.EnsurePatExists(ctx, p.Env, p.console)
+		if err != nil {
+			return nil, err
+		}
+		connection, err := azdo.GetConnection(ctx, org, pat)
+		if err != nil {
+			return nil, err
+		}
+		sConnection, err := azdo.CreateServiceConnection(
+			ctx, connection, details.projectId, details.projectName, *p.Env, p.credentials, p.console)
+		if err != nil {
+			return nil, err
+		}
+		federatedCredentials := []*graphsdk.FederatedIdentityCredential{
+			{
+				Name:        "AzureDevOpsOIDC", //Must not contain a space character and 3 to 64 characters in length
+				Issuer:      (*sConnection.Authorization.Parameters)["workloadIdentityFederationIssuer"],
+				Subject:     (*sConnection.Authorization.Parameters)["workloadIdentityFederationSubject"],
+				Description: to.Ptr("Created by Azure Developer CLI"),
+				Audiences:   []string{federatedIdentityAudience},
+			},
+		}
+		return &CredentialOptions{
+			EnableFederatedCredentials: true,
+			FederatedCredentialOptions: federatedCredentials,
+		}, nil
 	}
 
 	return &CredentialOptions{
 		EnableClientCredentials:    false,
 		EnableFederatedCredentials: false,
-	}
+	}, nil
 }
 
 // configureConnection set up Azure DevOps with the Azure credential
@@ -721,10 +771,15 @@ func (p *AzdoCiProvider) configureConnection(
 	repoDetails *gitRepositoryDetails,
 	provisioningProvider provisioning.Options,
 	servicePrincipal *graphsdk.ServicePrincipal,
-	authType PipelineAuthType,
-	credentials *azcli.AzureCredentials,
+	credentialOptions *CredentialOptions,
+	credentials *entraid.AzureCredentials,
 ) error {
+	if credentialOptions.EnableFederatedCredentials {
+		// default and federated credentials are set up in credentialOptions
+		return nil
+	}
 	p.credentials = credentials
+	// create service connection for client credentials
 	details := repoDetails.details.(*AzdoRepositoryDetails)
 	org, _, err := azdo.EnsureOrgNameExists(ctx, p.envManager, p.Env, p.console)
 	if err != nil {
@@ -738,27 +793,16 @@ func (p *AzdoCiProvider) configureConnection(
 	if err != nil {
 		return err
 	}
-	err = azdo.CreateServiceConnection(ctx, connection, details.projectId, *p.Env, p.credentials, p.console)
-	if err != nil {
-		return err
-	}
-
-	p.console.MessageUxItem(ctx, &ux.MultilineMessage{
-		Lines: []string{
-			"",
-			"Azure DevOps project and connection is now configured.",
-			""},
-	})
-	return nil
+	_, err = azdo.CreateServiceConnection(
+		ctx, connection, details.projectId, details.projectName, *p.Env, p.credentials, p.console)
+	return err
 }
 
 // configurePipeline create Azdo pipeline
 func (p *AzdoCiProvider) configurePipeline(
 	ctx context.Context,
 	repoDetails *gitRepositoryDetails,
-	provisioningProvider provisioning.Options,
-	additionalSecrets map[string]string,
-	additionalVariables map[string]string,
+	options *configurePipelineOptions,
 ) (CiPipeline, error) {
 	details := repoDetails.details.(*AzdoRepositoryDetails)
 
@@ -783,9 +827,9 @@ func (p *AzdoCiProvider) configurePipeline(
 		p.credentials,
 		p.Env,
 		p.console,
-		provisioningProvider,
-		additionalSecrets,
-		additionalVariables,
+		*options.provisioningProvider,
+		options.secrets,
+		options.variables,
 	)
 	if err != nil {
 		return nil, err
