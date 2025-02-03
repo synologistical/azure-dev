@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package environment
 
 import (
@@ -7,6 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing"
@@ -16,7 +21,6 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/contracts"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	"golang.org/x/exp/slices"
 )
 
 var (
@@ -83,8 +87,8 @@ func (sbd *StorageBlobDataStore) List(ctx context.Context) ([]*contracts.EnvList
 		envs = append(envs, env)
 	}
 
-	slices.SortFunc(envs, func(a, b *contracts.EnvListEnvironment) bool {
-		return a.Name < b.Name
+	slices.SortFunc(envs, func(a, b *contracts.EnvListEnvironment) int {
+		return strings.Compare(a.Name, b.Name)
 	})
 
 	return envs, nil
@@ -101,7 +105,7 @@ func (sbd *StorageBlobDataStore) Get(ctx context.Context, name string) (*Environ
 	})
 
 	if matchingIndex < 0 {
-		return nil, fmt.Errorf("%s %w", name, ErrNotFound)
+		return nil, fmt.Errorf("'%s': %w", name, ErrNotFound)
 	}
 
 	matchingEnv := envs[matchingIndex]
@@ -116,7 +120,7 @@ func (sbd *StorageBlobDataStore) Get(ctx context.Context, name string) (*Environ
 	return env, nil
 }
 
-func (sbd *StorageBlobDataStore) Save(ctx context.Context, env *Environment) error {
+func (sbd *StorageBlobDataStore) Save(ctx context.Context, env *Environment, options *SaveOptions) error {
 	// Update configuration
 	cfgWriter := new(bytes.Buffer)
 
@@ -185,6 +189,38 @@ func (sbd *StorageBlobDataStore) Reload(ctx context.Context, env *Environment) e
 		tracing.SetGlobalAttributes(fields.SubscriptionIdKey.String(env.GetSubscriptionId()))
 	} else {
 		tracing.SetGlobalAttributes(fields.StringHashed(fields.SubscriptionIdKey, env.GetSubscriptionId()))
+	}
+
+	return nil
+}
+
+func (sbd *StorageBlobDataStore) Delete(ctx context.Context, name string) error {
+	envs, err := sbd.List(ctx)
+	if err != nil {
+		return describeError(err)
+	}
+
+	matchingIndex := slices.IndexFunc(envs, func(env *contracts.EnvListEnvironment) bool {
+		return env.Name == name
+	})
+
+	if matchingIndex < 0 {
+		return fmt.Errorf("'%s': %w", name, ErrNotFound)
+	}
+
+	env := envs[matchingIndex]
+	if env.ConfigPath != "" {
+		err := sbd.blobClient.Delete(ctx, env.ConfigPath)
+		if err != nil {
+			return fmt.Errorf("deleting remote config: %w", describeError(err))
+		}
+	}
+
+	if env.DotEnvPath != "" {
+		err := sbd.blobClient.Delete(ctx, env.DotEnvPath)
+		if err != nil {
+			return fmt.Errorf("deleting remote .env: %w", describeError(err))
+		}
 	}
 
 	return nil

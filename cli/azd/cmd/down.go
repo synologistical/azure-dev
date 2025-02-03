@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
@@ -8,6 +11,7 @@ import (
 	"github.com/azure/azure-dev/cli/azd/cmd/actions"
 	"github.com/azure/azure-dev/cli/azd/internal"
 	"github.com/azure/azure-dev/cli/azd/pkg/alpha"
+	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
@@ -22,7 +26,7 @@ type downFlags struct {
 	forceDelete bool
 	purgeDelete bool
 	global      *internal.GlobalCommandOptions
-	envFlag
+	internal.EnvFlag
 }
 
 func (i *downFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOptions) {
@@ -34,7 +38,7 @@ func (i *downFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOpt
 		//nolint:lll
 		"Does not require confirmation before it permanently deletes resources that are soft-deleted by default (for example, key vaults).",
 	)
-	i.envFlag.Bind(local, global)
+	i.EnvFlag.Bind(local, global)
 	i.global = global
 }
 
@@ -53,12 +57,13 @@ func newDownCmd() *cobra.Command {
 }
 
 type downAction struct {
-	flags            *downFlags
-	provisionManager *provisioning.Manager
-	importManager    *project.ImportManager
-	env              *environment.Environment
-	console          input.Console
-	projectConfig    *project.ProjectConfig
+	flags               *downFlags
+	provisionManager    *provisioning.Manager
+	importManager       *project.ImportManager
+	env                 *environment.Environment
+	console             input.Console
+	projectConfig       *project.ProjectConfig
+	alphaFeatureManager *alpha.FeatureManager
 }
 
 func newDownAction(
@@ -71,12 +76,13 @@ func newDownAction(
 	importManager *project.ImportManager,
 ) actions.Action {
 	return &downAction{
-		flags:            flags,
-		provisionManager: provisionManager,
-		env:              env,
-		console:          console,
-		projectConfig:    projectConfig,
-		importManager:    importManager,
+		flags:               flags,
+		provisionManager:    provisionManager,
+		env:                 env,
+		console:             console,
+		projectConfig:       projectConfig,
+		importManager:       importManager,
+		alphaFeatureManager: alphaFeatureManager,
 	}
 }
 
@@ -97,6 +103,10 @@ func (a *downAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 
 	if err := a.provisionManager.Initialize(ctx, a.projectConfig.Path, infra.Options); err != nil {
 		return nil, fmt.Errorf("initializing provisioning manager: %w", err)
+	}
+
+	if a.alphaFeatureManager.IsEnabled(azapi.FeatureDeploymentStacks) {
+		a.console.WarnForFeature(ctx, azapi.FeatureDeploymentStacks)
 	}
 
 	destroyOptions := provisioning.NewDestroyOptions(a.flags.forceDelete, a.flags.purgeDelete)

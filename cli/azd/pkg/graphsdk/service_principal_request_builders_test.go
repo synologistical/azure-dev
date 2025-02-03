@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package graphsdk_test
 
 import (
@@ -7,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/azure/azure-dev/cli/azd/pkg/graphsdk"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 	"github.com/azure/azure-dev/cli/azd/test/mocks/mockgraphsdk"
@@ -17,11 +20,11 @@ import (
 var (
 	servicePrincipals []graphsdk.ServicePrincipal = []graphsdk.ServicePrincipal{
 		{
-			Id:          convert.RefOf("1"),
+			Id:          to.Ptr("1"),
 			DisplayName: "SPN 1",
 		},
 		{
-			Id:          convert.RefOf("2"),
+			Id:          to.Ptr("2"),
 			DisplayName: "SPN 2",
 		},
 	}

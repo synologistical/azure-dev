@@ -1,28 +1,38 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
+	"strings"
 	"sync"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"go.uber.org/multierr"
-	"golang.org/x/exp/slices"
 )
 
+// ADE Bicep deployments have a name of a date like string followed by a number
+var bicepDeploymentNameRegex = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-\d+$`)
+
 // DeploymentFilterPredicate is a predicate function for filtering deployments
-type DeploymentFilterPredicate func(d *armresources.DeploymentExtended) bool
+type DeploymentFilterPredicate func(d *azapi.ResourceDeployment) bool
 
 // ProjectFilterPredicate is a predicate function for filtering projects
 type ProjectFilterPredicate func(p *devcentersdk.Project) bool
 
 // DevCenterFilterPredicate is a predicate function for filtering dev centers
 type DevCenterFilterPredicate func(dc *devcentersdk.DevCenter) bool
+
+// EnvironmentDefinitionFilterPredicate is a predicate function for filtering environment definitions
+type EnvironmentDefinitionFilterPredicate func(ed *devcentersdk.EnvironmentDefinition) bool
 
 // EnvironmentFilterPredicate is a predicate function for filtering environments
 type EnvironmentFilterPredicate func(e *devcentersdk.Environment) bool
@@ -39,42 +49,39 @@ type Manager interface {
 	// Deployment gets the Resource Group scoped deployment for the specified devcenter environment
 	Deployment(
 		ctx context.Context,
+		config *Config,
 		env *devcentersdk.Environment,
 		filter DeploymentFilterPredicate,
 	) (infra.Deployment, error)
 	// LatestArmDeployment gets the latest ARM deployment for the specified devcenter environment
 	LatestArmDeployment(
 		ctx context.Context,
+		config *Config,
 		env *devcentersdk.Environment,
 		filter DeploymentFilterPredicate,
-	) (*armresources.DeploymentExtended, error)
+	) (*azapi.ResourceDeployment, error)
 	// Outputs gets the outputs for the specified devcenter environment
 	Outputs(
 		ctx context.Context,
+		config *Config,
 		env *devcentersdk.Environment,
 	) (map[string]provisioning.OutputParameter, error)
 }
 
 // Manager provides a common set of methods for interactive with a devcenter and its environments
 type manager struct {
-	config               *Config
-	client               devcentersdk.DevCenterClient
-	deploymentsService   azapi.Deployments
-	deploymentOperations azapi.DeploymentOperations
+	client            devcentersdk.DevCenterClient
+	deploymentManager *infra.DeploymentManager
 }
 
 // NewManager creates a new devcenter manager
 func NewManager(
-	config *Config,
 	client devcentersdk.DevCenterClient,
-	deploymentsService azapi.Deployments,
-	deploymentOperations azapi.DeploymentOperations,
+	deploymentManager *infra.DeploymentManager,
 ) Manager {
 	return &manager{
-		config:               config,
-		client:               client,
-		deploymentsService:   deploymentsService,
-		deploymentOperations: deploymentOperations,
+		client:            client,
+		deploymentManager: deploymentManager,
 	}
 }
 
@@ -202,6 +209,7 @@ func (m *manager) WritableProjects(ctx context.Context) ([]*devcentersdk.Project
 // Deployment gets the Resource Group scoped deployment for the specified devcenter environment
 func (m *manager) Deployment(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 	filter DeploymentFilterPredicate,
 ) (infra.Deployment, error) {
@@ -210,63 +218,57 @@ func (m *manager) Deployment(
 		return nil, fmt.Errorf("failed parsing resource group id: %w", err)
 	}
 
-	latestDeployment, err := m.LatestArmDeployment(ctx, env, filter)
+	latestDeployment, err := m.LatestArmDeployment(ctx, config, env, filter)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting latest deployment: %w", err)
 	}
 
-	return infra.NewResourceGroupDeployment(
-		m.deploymentsService,
-		m.deploymentOperations,
-		resourceGroupId.SubscriptionId,
-		resourceGroupId.Name,
-		*latestDeployment.Name,
-	), nil
+	scope := m.deploymentManager.ResourceGroupScope(resourceGroupId.SubscriptionId, resourceGroupId.Name)
+	return m.deploymentManager.ResourceGroupDeployment(scope, latestDeployment.Name), nil
 }
 
 // LatestArmDeployment gets the latest ARM deployment for the specified devcenter environment
 // When a filter is applied the latest deployment that matches the filter will be returned
 func (m *manager) LatestArmDeployment(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 	filter DeploymentFilterPredicate,
-) (*armresources.DeploymentExtended, error) {
+) (*azapi.ResourceDeployment, error) {
 	resourceGroupId, err := devcentersdk.NewResourceGroupId(env.ResourceGroupId)
 	if err != nil {
 		return nil, fmt.Errorf("failed parsing resource group id: %w", err)
 	}
 
-	scope := infra.NewResourceGroupScope(
-		m.deploymentsService,
-		m.deploymentOperations,
-		resourceGroupId.SubscriptionId,
-		resourceGroupId.Name,
-	)
-
+	scope := m.deploymentManager.ResourceGroupScope(resourceGroupId.SubscriptionId, resourceGroupId.Name)
 	deployments, err := scope.ListDeployments(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed listing deployments: %w", err)
 	}
 
-	slices.SortFunc(deployments, func(x, y *armresources.DeploymentExtended) bool {
-		return x.Properties.Timestamp.After(*y.Properties.Timestamp)
+	// Sorts the deployments by timestamp in descending order
+	slices.SortFunc(deployments, func(x, y *azapi.ResourceDeployment) int {
+		return x.Timestamp.Compare(y.Timestamp)
 	})
 
-	latestDeploymentIndex := slices.IndexFunc(deployments, func(d *armresources.DeploymentExtended) bool {
+	latestDeploymentIndex := slices.IndexFunc(deployments, func(d *azapi.ResourceDeployment) bool {
 		tagDevCenterName, devCenterOk := d.Tags[DeploymentTagDevCenterName]
 		tagProjectName, projectOk := d.Tags[DeploymentTagDevCenterProject]
 		tagEnvTypeName, envTypeOk := d.Tags[DeploymentTagEnvironmentType]
 		tagEnvName, envOk := d.Tags[DeploymentTagEnvironmentName]
 
-		if !devCenterOk || !projectOk || !envTypeOk || !envOk {
-			return false
-		}
+		// ARM runner deployments contain the deployment tags for the specific environment
+		isArmDeployment := devCenterOk && strings.EqualFold(*tagDevCenterName, config.Name) &&
+			projectOk && strings.EqualFold(*tagProjectName, config.Project) &&
+			envTypeOk && strings.EqualFold(*tagEnvTypeName, env.EnvironmentType) &&
+			envOk && strings.EqualFold(*tagEnvName, env.Name)
 
-		if *tagDevCenterName == m.config.Name ||
-			*tagProjectName == m.config.Project ||
-			*tagEnvTypeName == m.config.EnvironmentType ||
-			*tagEnvName == env.Name {
+		// Support for untagged Bicep ADE deployments
+		// If the deployment is not tagged but starts with the current date and is running
+		// this is another indication that this is the latest running Bicep deployment
+		isBicepDeployment := !isArmDeployment && bicepDeploymentNameRegex.MatchString(d.Name)
 
+		if isArmDeployment || isBicepDeployment {
 			if filter == nil {
 				return true
 			}
@@ -285,10 +287,9 @@ func (m *manager) LatestArmDeployment(
 }
 
 // Outputs gets the outputs for the latest deployment of the specified environment
-// Right now this will retrieve the outputs from the latest azure deployment
-// Long term this will call into ADE Outputs API
 func (m *manager) Outputs(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 ) (map[string]provisioning.OutputParameter, error) {
 	resourceGroupId, err := devcentersdk.NewResourceGroupId(env.ResourceGroupId)
@@ -296,12 +297,21 @@ func (m *manager) Outputs(
 		return nil, fmt.Errorf("failed parsing resource group id: %w", err)
 	}
 
-	latestDeployment, err := m.LatestArmDeployment(ctx, env, nil)
+	outputsResponse, err := m.client.DevCenterByName(config.Name).
+		ProjectByName(config.Project).
+		EnvironmentsByUser(env.User).
+		EnvironmentByName(env.Name).
+		Outputs().
+		Get(ctx)
+
 	if err != nil {
-		return nil, fmt.Errorf("failed getting latest deployment: %w", err)
+		return nil, fmt.Errorf("failed getting outputs: %w", err)
 	}
 
-	outputs := createOutputParameters(azapi.CreateDeploymentOutput(latestDeployment.Properties.Outputs))
+	outputs, err := createOutputParameters(outputsResponse)
+	if err != nil {
+		return nil, fmt.Errorf("failed resolving output parameters: %w", err)
+	}
 
 	// Set up AZURE_SUBSCRIPTION_ID and AZURE_RESOURCE_GROUP environment variables
 	// These are required for azd deploy to work as expected
@@ -320,4 +330,49 @@ func (m *manager) Outputs(
 	}
 
 	return outputs, nil
+}
+
+func mapDevCenterTypeToParamType(devCenterType devcentersdk.OutputParameterType) (provisioning.ParameterType, error) {
+	switch strings.ToLower(string(devCenterType)) {
+	case string(devcentersdk.OutputParameterTypeString):
+		return provisioning.ParameterTypeString, nil
+	case string(devcentersdk.OutputParameterTypeBoolean):
+		return provisioning.ParameterTypeBoolean, nil
+	case string(devcentersdk.OutputParameterTypeNumber):
+		return provisioning.ParameterTypeNumber, nil
+	case string(devcentersdk.OutputParameterTypeObject):
+		return provisioning.ParameterTypeObject, nil
+	case string(devcentersdk.OutputParameterTypeArray):
+		return provisioning.ParameterTypeArray, nil
+	default:
+		return "", fmt.Errorf("unexpected output parameter type: '%s'", string(devCenterType))
+	}
+}
+
+// Creates a normalized view of the azure output parameters and resolves inconsistencies in the output parameter name
+// casings.
+func createOutputParameters(
+	outputsResponse *devcentersdk.OutputListResponse,
+) (map[string]provisioning.OutputParameter, error) {
+	outputParams := map[string]provisioning.OutputParameter{}
+
+	for key, devCenterParam := range outputsResponse.Outputs {
+		// To support BYOI (bring your own infrastructure) scenarios we will default to UPPER when canonical casing
+		// is not found in the parameters file to workaround strange azure behavior with OUTPUT values that look
+		// like `azurE_RESOURCE_GROUP`
+		paramName := strings.ToUpper(key)
+		value := devCenterParam.Value
+
+		paramType, err := mapDevCenterTypeToParamType(devCenterParam.Type)
+		if err != nil {
+			return nil, err
+		}
+
+		outputParams[paramName] = provisioning.OutputParameter{
+			Type:  paramType,
+			Value: value,
+		}
+	}
+
+	return outputParams, nil
 }

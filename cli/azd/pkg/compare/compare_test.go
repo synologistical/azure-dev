@@ -1,9 +1,12 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package compare
 
 import (
 	"testing"
 
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 )
 
 func Test_StringUtil_IsStringNilOrEmpty(t *testing.T) {
@@ -19,17 +22,17 @@ func Test_StringUtil_IsStringNilOrEmpty(t *testing.T) {
 		},
 		{
 			name:  "empty",
-			value: convert.RefOf(""),
+			value: to.Ptr(""),
 			want:  true,
 		},
 		{
 			name:  "whitespace",
-			value: convert.RefOf("  "),
+			value: to.Ptr("  "),
 			want:  true,
 		},
 		{
 			name:  "non-empty",
-			value: convert.RefOf("foo"),
+			value: to.Ptr("foo"),
 			want:  false,
 		},
 	}
@@ -57,19 +60,19 @@ func Test_StringUtil_PtrValueEquals(t *testing.T) {
 		},
 		{
 			name:     "empty",
-			actual:   convert.RefOf(""),
+			actual:   to.Ptr(""),
 			expected: "foo",
 			want:     false,
 		},
 		{
 			name:     "whitespace",
-			actual:   convert.RefOf("  "),
+			actual:   to.Ptr("  "),
 			expected: "foo",
 			want:     false,
 		},
 		{
 			name:     "non-empty",
-			actual:   convert.RefOf("foo"),
+			actual:   to.Ptr("foo"),
 			expected: "foo",
 			want:     true,
 		},

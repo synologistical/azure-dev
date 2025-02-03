@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
@@ -10,6 +13,7 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/ext"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
+	"github.com/azure/azure-dev/cli/azd/pkg/ioc"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
 	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/project"
@@ -54,14 +58,14 @@ func newHooksRunCmd() *cobra.Command {
 }
 
 type hooksRunFlags struct {
-	envFlag
+	internal.EnvFlag
 	global   *internal.GlobalCommandOptions
 	platform string
 	service  string
 }
 
 func (f *hooksRunFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOptions) {
-	f.envFlag.Bind(local, global)
+	f.EnvFlag.Bind(local, global)
 	f.global = global
 
 	local.StringVar(&f.platform, "platform", "", "Forces hooks to run for the specified platform.")
@@ -69,14 +73,15 @@ func (f *hooksRunFlags) Bind(local *pflag.FlagSet, global *internal.GlobalComman
 }
 
 type hooksRunAction struct {
-	projectConfig *project.ProjectConfig
-	env           *environment.Environment
-	envManager    environment.Manager
-	importManager *project.ImportManager
-	commandRunner exec.CommandRunner
-	console       input.Console
-	flags         *hooksRunFlags
-	args          []string
+	projectConfig  *project.ProjectConfig
+	env            *environment.Environment
+	envManager     environment.Manager
+	importManager  *project.ImportManager
+	commandRunner  exec.CommandRunner
+	console        input.Console
+	flags          *hooksRunFlags
+	args           []string
+	serviceLocator ioc.ServiceLocator
 }
 
 func newHooksRunAction(
@@ -88,16 +93,18 @@ func newHooksRunAction(
 	console input.Console,
 	flags *hooksRunFlags,
 	args []string,
+	serviceLocator ioc.ServiceLocator,
 ) actions.Action {
 	return &hooksRunAction{
-		projectConfig: projectConfig,
-		env:           env,
-		envManager:    envManager,
-		commandRunner: commandRunner,
-		console:       console,
-		flags:         flags,
-		args:          args,
-		importManager: importManager,
+		projectConfig:  projectConfig,
+		env:            env,
+		envManager:     envManager,
+		commandRunner:  commandRunner,
+		console:        console,
+		flags:          flags,
+		args:           args,
+		importManager:  importManager,
+		serviceLocator: serviceLocator,
 	}
 }
 
@@ -126,13 +133,15 @@ func (hra *hooksRunAction) Run(ctx context.Context) (*actions.ActionResult, erro
 	}
 
 	// Project level hooks
+	projectHooks := hra.projectConfig.Hooks[hookName]
+
 	if err := hra.processHooks(
 		ctx,
 		hra.projectConfig.Path,
 		hookName,
-		fmt.Sprintf("Running %s command hook for project", hookName),
+		fmt.Sprintf("Running %d %s command hook(s) for project", len(projectHooks), hookName),
 		fmt.Sprintf("Project: %s Hook Output", hookName),
-		hra.projectConfig.Hooks,
+		projectHooks,
 		false,
 	); err != nil {
 		return nil, err
@@ -145,15 +154,16 @@ func (hra *hooksRunAction) Run(ctx context.Context) (*actions.ActionResult, erro
 
 	// Service level hooks
 	for _, service := range stableServices {
+		serviceHooks := service.Hooks[hookName]
 		skip := hra.flags.service != "" && service.Name != hra.flags.service
 
 		if err := hra.processHooks(
 			ctx,
 			service.RelativePath,
 			hookName,
-			fmt.Sprintf("Running %s service hook for %s", hookName, service.Name),
+			fmt.Sprintf("Running %d %s service hook(s) for %s", len(serviceHooks), hookName, service.Name),
 			fmt.Sprintf("%s: %s hook output", service.Name, hookName),
-			service.Hooks,
+			serviceHooks,
 			skip,
 		); err != nil {
 			return nil, err
@@ -173,7 +183,7 @@ func (hra *hooksRunAction) processHooks(
 	hookName string,
 	spinnerMessage string,
 	previewMessage string,
-	hooks map[string]*ext.HookConfig,
+	hooks []*ext.HookConfig,
 	skip bool,
 ) error {
 	hra.console.ShowSpinner(ctx, spinnerMessage, input.Step)
@@ -183,26 +193,27 @@ func (hra *hooksRunAction) processHooks(
 		return nil
 	}
 
-	hook, ok := hooks[hookName]
-	if !ok {
+	if len(hooks) == 0 {
 		hra.console.StopSpinner(ctx, spinnerMessage+noHookFoundMessage, input.StepWarning)
 		return nil
 	}
 
 	hookType, commandName := ext.InferHookType(hookName)
 
-	if err := hra.prepareHook(hookName, hook); err != nil {
-		return err
-	}
+	for _, hook := range hooks {
+		if err := hra.prepareHook(hookName, hook); err != nil {
+			return err
+		}
 
-	err := hra.execHook(ctx, previewMessage, cwd, hookType, commandName, hook)
-	if err != nil {
-		hra.console.StopSpinner(ctx, spinnerMessage, input.StepFailed)
-		return fmt.Errorf("failed running hook %s, %w", hookName, err)
-	}
+		err := hra.execHook(ctx, previewMessage, cwd, hookType, commandName, hook)
+		if err != nil {
+			hra.console.StopSpinner(ctx, spinnerMessage, input.StepFailed)
+			return fmt.Errorf("failed running hook %s, %w", hookName, err)
+		}
 
-	// The previewer cancels the previous spinner so we need to restart/show it again.
-	hra.console.StopSpinner(ctx, spinnerMessage, input.StepDone)
+		// The previewer cancels the previous spinner so we need to restart/show it again.
+		hra.console.StopSpinner(ctx, spinnerMessage, input.StepDone)
+	}
 
 	return nil
 }
@@ -217,12 +228,13 @@ func (hra *hooksRunAction) execHook(
 ) error {
 	hookName := string(hookType) + commandName
 
-	hooks := map[string]*ext.HookConfig{
-		hookName: hook,
+	hooksMap := map[string][]*ext.HookConfig{
+		hookName: {hook},
 	}
 
 	hooksManager := ext.NewHooksManager(cwd)
-	hooksRunner := ext.NewHooksRunner(hooksManager, hra.commandRunner, hra.envManager, hra.console, cwd, hooks, hra.env)
+	hooksRunner := ext.NewHooksRunner(
+		hooksManager, hra.commandRunner, hra.envManager, hra.console, cwd, hooksMap, hra.env, hra.serviceLocator)
 
 	previewer := hra.console.ShowPreviewer(ctx, &input.ShowPreviewerOptions{
 		Prefix:       "  ",

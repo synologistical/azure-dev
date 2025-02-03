@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
@@ -7,19 +10,20 @@ import (
 	"time"
 
 	"github.com/azure/azure-dev/cli/azd/cmd/actions"
-	"github.com/azure/azure-dev/cli/azd/cmd/middleware"
 	"github.com/azure/azure-dev/cli/azd/internal"
+	"github.com/azure/azure-dev/cli/azd/pkg/async"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
 	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/project"
+	"github.com/azure/azure-dev/cli/azd/pkg/workflow"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
 type buildFlags struct {
-	*envFlag
+	*internal.EnvFlag
 	all    bool
 	global *internal.GlobalCommandOptions
 	only   bool
@@ -27,7 +31,7 @@ type buildFlags struct {
 
 func newBuildFlags(cmd *cobra.Command, global *internal.GlobalCommandOptions) *buildFlags {
 	flags := &buildFlags{
-		envFlag: &envFlag{},
+		EnvFlag: &internal.EnvFlag{},
 	}
 
 	flags.Bind(cmd.Flags(), global)
@@ -36,7 +40,7 @@ func newBuildFlags(cmd *cobra.Command, global *internal.GlobalCommandOptions) *b
 }
 
 func (bf *buildFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOptions) {
-	bf.envFlag.Bind(local, global)
+	bf.EnvFlag.Bind(local, global)
 	bf.global = global
 
 	local.BoolVar(
@@ -58,17 +62,16 @@ func newBuildCmd() *cobra.Command {
 }
 
 type buildAction struct {
-	flags                    *buildFlags
-	args                     []string
-	projectConfig            *project.ProjectConfig
-	projectManager           project.ProjectManager
-	importManager            *project.ImportManager
-	serviceManager           project.ServiceManager
-	console                  input.Console
-	formatter                output.Formatter
-	writer                   io.Writer
-	middlewareRunner         middleware.MiddlewareContext
-	restoreActionInitializer actions.ActionInitializer[*restoreAction]
+	flags          *buildFlags
+	args           []string
+	projectConfig  *project.ProjectConfig
+	projectManager project.ProjectManager
+	importManager  *project.ImportManager
+	serviceManager project.ServiceManager
+	console        input.Console
+	formatter      output.Formatter
+	writer         io.Writer
+	workflowRunner *workflow.Runner
 }
 
 func newBuildAction(
@@ -81,22 +84,20 @@ func newBuildAction(
 	console input.Console,
 	formatter output.Formatter,
 	writer io.Writer,
-	middlewareRunner middleware.MiddlewareContext,
-	restoreActionInitializer actions.ActionInitializer[*restoreAction],
+	workflowRunner *workflow.Runner,
 
 ) actions.Action {
 	return &buildAction{
-		flags:                    flags,
-		args:                     args,
-		projectConfig:            projectConfig,
-		projectManager:           projectManager,
-		serviceManager:           serviceManager,
-		console:                  console,
-		formatter:                formatter,
-		writer:                   writer,
-		middlewareRunner:         middlewareRunner,
-		restoreActionInitializer: restoreActionInitializer,
-		importManager:            importManager,
+		flags:          flags,
+		args:           args,
+		projectConfig:  projectConfig,
+		projectManager: projectManager,
+		serviceManager: serviceManager,
+		console:        console,
+		formatter:      formatter,
+		writer:         writer,
+		importManager:  importManager,
+		workflowRunner: workflowRunner,
 	}
 }
 
@@ -106,17 +107,22 @@ type BuildResult struct {
 }
 
 func (ba *buildAction) Run(ctx context.Context) (*actions.ActionResult, error) {
+	// When the --only flag is NOT specified, we need to restore the project before building it.
 	if !ba.flags.only {
-		restoreAction, err := ba.restoreActionInitializer()
-		restoreAction.flags.all = ba.flags.all
-		restoreAction.args = ba.args
-		if err != nil {
-			return nil, err
+		restoreArgs := []string{"restore"}
+		restoreArgs = append(restoreArgs, ba.args...)
+		if ba.flags.all {
+			restoreArgs = append(restoreArgs, "--all")
 		}
 
-		buildOptions := &middleware.Options{CommandPath: "restore"}
-		_, err = ba.middlewareRunner.RunChildAction(ctx, buildOptions, restoreAction)
-		if err != nil {
+		// We restore the project by running a workflow that contains a restore command
+		workflow := &workflow.Workflow{
+			Steps: []*workflow.Step{
+				workflow.NewAzdCommandStep(restoreArgs...),
+			},
+		}
+
+		if err := ba.workflowRunner.Run(ctx, workflow); err != nil {
 			return nil, err
 		}
 	}
@@ -146,13 +152,13 @@ func (ba *buildAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 		return nil, err
 	}
 
-	if err := ba.projectManager.EnsureFrameworkTools(ctx, ba.projectConfig, func(svc *project.ServiceConfig) bool {
-		return targetServiceName == "" || svc.Name == targetServiceName
-	}); err != nil {
+	if err := ba.projectManager.Initialize(ctx, ba.projectConfig); err != nil {
 		return nil, err
 	}
 
-	if err := ba.projectManager.Initialize(ctx, ba.projectConfig); err != nil {
+	if err := ba.projectManager.EnsureFrameworkTools(ctx, ba.projectConfig, func(svc *project.ServiceConfig) bool {
+		return targetServiceName == "" || svc.Name == targetServiceName
+	}); err != nil {
 		return nil, err
 	}
 
@@ -174,15 +180,16 @@ func (ba *buildAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 			continue
 		}
 
-		buildTask := ba.serviceManager.Build(ctx, svc, nil)
-		go func() {
-			for buildProgress := range buildTask.Progress() {
+		buildResult, err := async.RunWithProgress(
+			func(buildProgress project.ServiceProgress) {
 				progressMessage := fmt.Sprintf("Building service %s (%s)", svc.Name, buildProgress.Message)
 				ba.console.ShowSpinner(ctx, progressMessage, input.Step)
-			}
-		}()
+			},
+			func(progress *async.Progress[project.ServiceProgress]) (*project.ServiceBuildResult, error) {
+				return ba.serviceManager.Build(ctx, svc, nil, progress)
+			},
+		)
 
-		buildResult, err := buildTask.Await()
 		if err != nil {
 			ba.console.StopSpinner(ctx, stepMessage, input.StepFailed)
 			return nil, err

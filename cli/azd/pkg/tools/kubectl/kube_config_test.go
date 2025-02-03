@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package kubectl
 
 import (
@@ -14,7 +17,7 @@ import (
 func Test_MergeKubeConfig(t *testing.T) {
 	mockContext := mocks.NewMockContext(context.Background())
 	commandRunner := exec.NewCommandRunner(nil)
-	cli := NewKubectl(commandRunner)
+	cli := NewCli(commandRunner)
 	kubeConfigManager, err := NewKubeConfigManager(cli)
 	require.NoError(t, err)
 

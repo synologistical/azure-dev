@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 // Package actions contains the application logic that handles azd CLI commands.
 package actions
 
@@ -22,9 +25,6 @@ type ResultMessage struct {
 // Define the Action outputs.
 type ActionResult struct {
 	Message *ResultMessage
-
-	// TraceID is a unique identifier of the end-to-end CLI command execution, that can be used to correlate events in logs.
-	TraceID string
 }
 
 // Action is the representation of the application logic of a CLI command.
@@ -34,6 +34,3 @@ type Action interface {
 	// It is currently valid to both return an error and a non-nil ActionResult.
 	Run(ctx context.Context) (*ActionResult, error)
 }
-
-// A function that lazily returns the specified action type T
-type ActionInitializer[T Action] func() (T, error)

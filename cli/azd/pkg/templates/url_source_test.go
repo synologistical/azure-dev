@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package templates
 
 import (
@@ -21,7 +24,7 @@ func Test_NewUrlTemplateSource_ValidUrl(t *testing.T) {
 		return mocks.CreateHttpResponseWithBody(req, http.StatusOK, testTemplates)
 	})
 
-	source, err := NewUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
+	source, err := newUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
 	require.Nil(t, err)
 
 	require.Equal(t, name, source.Name())
@@ -39,7 +42,7 @@ func Test_NewUrlTemplateSource_ValidUrl_InvalidJson(t *testing.T) {
 		return mocks.CreateHttpResponseWithBody(req, http.StatusOK, "invalid json")
 	})
 
-	source, err := NewUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
+	source, err := newUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
 	require.Nil(t, source)
 	require.Error(t, err)
 }
@@ -56,7 +59,7 @@ func Test_NewUrlTemplateSource_InvalidUrl(t *testing.T) {
 		return mocks.CreateEmptyHttpResponse(req, http.StatusNotFound)
 	})
 
-	source, err := NewUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
+	source, err := newUrlTemplateSource(context.Background(), name, url, mockContext.HttpClient)
 	require.Nil(t, source)
 	require.Error(t, err)
 }

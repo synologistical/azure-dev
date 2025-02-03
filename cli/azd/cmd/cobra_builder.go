@@ -1,40 +1,33 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/azure/azure-dev/cli/azd/cmd/actions"
 	"github.com/azure/azure-dev/cli/azd/cmd/middleware"
-	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
-	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/ioc"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
-	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
-	"github.com/azure/azure-dev/cli/azd/pkg/tools/azcli"
 	"github.com/spf13/cobra"
 )
-
-const cDocsFlagName = "docs"
 
 // CobraBuilder manages the construction of the cobra command tree from nested ActionDescriptors
 type CobraBuilder struct {
 	container *ioc.NestedContainer
-	runner    *middleware.MiddlewareRunner
 }
 
 // Creates a new instance of the Cobra builder
 func NewCobraBuilder(container *ioc.NestedContainer) *CobraBuilder {
 	return &CobraBuilder{
 		container: container,
-		runner:    middleware.NewMiddlewareRunner(container),
 	}
 }
 
@@ -101,31 +94,26 @@ func (cb *CobraBuilder) configureActionResolver(cmd *cobra.Command, descriptor *
 	}
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		ctx = tools.WithInstalledCheckCache(ctx)
+		// Register root go context that will be used for resolving singleton dependencies
+		ctx := tools.WithInstalledCheckCache(cmd.Context())
+		ioc.RegisterInstance(cb.container, ctx)
 
-		// Registers the following to enable injection into actions that require them
-		ioc.RegisterInstance(cb.container, cb.runner)
-		ioc.RegisterInstance(cb.container, middleware.MiddlewareContext(cb.runner))
-		ioc.RegisterInstance(cb.container, cmd)
-		ioc.RegisterInstance(cb.container, args)
-
-		if err := cb.registerMiddleware(descriptor); err != nil {
-			return err
+		// Create new container scope for the current command
+		cmdContainer, err := cb.container.NewScope()
+		if err != nil {
+			return fmt.Errorf("failed creating new scope for command, %w", err)
 		}
 
-		actionName := createActionName(cmd)
-		var action actions.Action
-		if err := cb.container.ResolveNamed(actionName, &action); err != nil {
-			if errors.Is(err, ioc.ErrResolveInstance) {
-				return fmt.Errorf(
-					//nolint:lll
-					"failed resolving action '%s'. Ensure the ActionResolver is a valid go function that returns an `actions.Action` interface, %w",
-					actionName,
-					err,
-				)
-			}
+		// Registers the following to enable injection into actions that require them
+		ioc.RegisterInstance(cmdContainer, ctx)
+		ioc.RegisterInstance(cmdContainer, cmd)
+		ioc.RegisterInstance(cmdContainer, args)
+		ioc.RegisterInstance(cmdContainer, cmdContainer)
+		ioc.RegisterInstance[ioc.ServiceLocator](cmdContainer, cmdContainer)
 
+		// Register any required middleware registered for the current action descriptor
+		middlewareRunner := middleware.NewMiddlewareRunner(cmdContainer)
+		if err := cb.registerMiddleware(middlewareRunner, descriptor); err != nil {
 			return err
 		}
 
@@ -137,65 +125,15 @@ func (cb *CobraBuilder) configureActionResolver(cmd *cobra.Command, descriptor *
 			Args:        args,
 		}
 
+		// Set the container that should be used for resolving middleware components
+		runOptions.WithContainer(cmdContainer)
+
 		// Run the middleware chain with action
-		log.Printf("Resolved action '%s'\n", actionName)
-		actionResult, err := cb.runner.RunAction(ctx, runOptions, action)
+		actionName := createActionName(cmd)
+		_, err = middlewareRunner.RunAction(ctx, runOptions, actionName)
 
 		// At this point, we know that there might be an error, so we can silence cobra from showing it after us.
 		cmd.SilenceErrors = true
-
-		// TODO: Consider refactoring to move the UX writing to a middleware
-		invokeErr := cb.container.Invoke(func(console input.Console) {
-			var displayResult *ux.ActionResult
-			if actionResult != nil && actionResult.Message != nil {
-				displayResult = &ux.ActionResult{
-					SuccessMessage: actionResult.Message.Header,
-					FollowUp:       actionResult.Message.FollowUp,
-				}
-			} else if err != nil {
-				displayResult = &ux.ActionResult{
-					Err: err,
-				}
-			}
-
-			if displayResult != nil {
-				console.MessageUxItem(ctx, displayResult)
-			}
-
-			if err != nil {
-				var respErr *azcore.ResponseError
-				var azureErr *azapi.AzureDeploymentError
-				var toolExitErr *exec.ExitError
-				var suggestionErr *azcli.ErrorWithSuggestion
-
-				// We only want to show trace ID for server-related errors,
-				// where we have full server logs to troubleshoot from.
-				//
-				// For client errors, we don't want to show the trace ID, as it is not useful to the user currently.
-				if errors.As(err, &respErr) ||
-					errors.As(err, &azureErr) ||
-					(errors.As(err, &toolExitErr) && toolExitErr.Cmd == "terraform") {
-					if actionResult != nil && actionResult.TraceID != "" {
-						console.Message(
-							ctx,
-							output.WithErrorFormat(fmt.Sprintf("TraceID: %s", actionResult.TraceID)))
-					}
-				}
-
-				if errors.As(err, &suggestionErr) {
-					console.Message(
-						ctx,
-						suggestionErr.Suggestion)
-				}
-			}
-
-			// Stop the spinner always to un-hide cursor
-			console.StopSpinner(ctx, "", input.Step)
-		})
-
-		if invokeErr != nil {
-			return invokeErr
-		}
 
 		return err
 	}
@@ -259,7 +197,7 @@ func (df *docsFlag) Set(value string) error {
 		}
 
 		commandPath := strings.ReplaceAll(c.CommandPath(), " ", "-")
-		commandDocsUrl := cReferenceDocumentationUrl + commandPath
+		commandDocsUrl := referenceDocumentationUrl + commandPath
 		openWithDefaultBrowser(ctx, console, commandDocsUrl)
 	})
 
@@ -284,7 +222,7 @@ func (cb *CobraBuilder) bindCommand(cmd *cobra.Command, descriptor *actions.Acti
 		},
 	}
 	flag := cmd.Flags().VarPF(
-		docsFlag, cDocsFlagName, "", fmt.Sprintf("Opens the documentation for %s in your web browser.", cmd.CommandPath()))
+		docsFlag, "docs", "", fmt.Sprintf("Opens the documentation for %s in your web browser.", cmd.CommandPath()))
 	flag.NoOptDefVal = "true"
 
 	// Consistently registers output formats for the descriptor
@@ -313,10 +251,10 @@ func (cb *CobraBuilder) bindCommand(cmd *cobra.Command, descriptor *actions.Acti
 	// These functions are typically the constructor function for the action. ex) newDeployAction(...)
 	// Action resolvers can take any number of dependencies and instantiated via the IoC container
 	if descriptor.Options.ActionResolver != nil {
-		if err := cb.container.RegisterNamedSingleton(actionName, descriptor.Options.ActionResolver); err != nil {
+		if err := cb.container.RegisterNamedTransient(actionName, descriptor.Options.ActionResolver); err != nil {
 			return fmt.Errorf(
 				//nolint:lll
-				"failed registering ActionResolver for action'%s'. Ensure the resolver is a valid go function and resolves without error. %w",
+				"failed registering ActionResolver for action '%s'. Ensure the resolver is a valid go function and resolves without error. %w",
 				actionName,
 				err,
 			)
@@ -363,7 +301,10 @@ func (cb *CobraBuilder) bindCommand(cmd *cobra.Command, descriptor *actions.Acti
 // Registers all middleware components for the current command and any parent descriptors
 // Middleware components are insure to run in the order that they were registered from the
 // root registration, down through action groups and ultimately individual actions
-func (cb *CobraBuilder) registerMiddleware(descriptor *actions.ActionDescriptor) error {
+func (cb *CobraBuilder) registerMiddleware(
+	middlewareRunner *middleware.MiddlewareRunner,
+	descriptor *actions.ActionDescriptor,
+) error {
 	chain := []*actions.MiddlewareRegistration{}
 	current := descriptor
 
@@ -394,7 +335,7 @@ func (cb *CobraBuilder) registerMiddleware(descriptor *actions.ActionDescriptor)
 	// higher up the command structure are resolved before lower registrations
 	for i := len(chain) - 1; i > -1; i-- {
 		registration := chain[i]
-		if err := cb.runner.Use(registration.Name, registration.Resolver); err != nil {
+		if err := middlewareRunner.Use(registration.Name, registration.Resolver); err != nil {
 			return err
 		}
 	}

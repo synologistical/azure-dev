@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
@@ -5,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
@@ -18,7 +21,6 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
-	"golang.org/x/exp/maps"
 )
 
 const (
@@ -34,15 +36,15 @@ const (
 
 // ProvisionProvider is a devcenter provider for provisioning ADE environments
 type ProvisionProvider struct {
-	console         input.Console
-	env             *environment.Environment
-	envManager      environment.Manager
-	config          *Config
-	devCenterClient devcentersdk.DevCenterClient
-	resourceManager *infra.AzureResourceManager
-	manager         Manager
-	prompter        *Prompter
-	options         provisioning.Options
+	console           input.Console
+	env               *environment.Environment
+	envManager        environment.Manager
+	config            *Config
+	devCenterClient   devcentersdk.DevCenterClient
+	deploymentManager *infra.DeploymentManager
+	manager           Manager
+	prompter          *Prompter
+	options           provisioning.Options
 }
 
 // NewProvisionProvider creates a new devcenter provider
@@ -52,19 +54,19 @@ func NewProvisionProvider(
 	envManager environment.Manager,
 	config *Config,
 	devCenterClient devcentersdk.DevCenterClient,
-	resourceManager *infra.AzureResourceManager,
+	deploymentManager *infra.DeploymentManager,
 	manager Manager,
 	prompter *Prompter,
 ) provisioning.Provider {
 	return &ProvisionProvider{
-		console:         console,
-		env:             env,
-		envManager:      envManager,
-		config:          config,
-		devCenterClient: devCenterClient,
-		resourceManager: resourceManager,
-		manager:         manager,
-		prompter:        prompter,
+		console:           console,
+		env:               env,
+		envManager:        envManager,
+		config:            config,
+		devCenterClient:   devCenterClient,
+		deploymentManager: deploymentManager,
+		manager:           manager,
+		prompter:          prompter,
 	}
 }
 
@@ -101,7 +103,7 @@ func (p *ProvisionProvider) State(
 		return nil, fmt.Errorf("failed getting environment: %w", err)
 	}
 
-	outputs, err := p.manager.Outputs(ctx, environment)
+	outputs, err := p.manager.Outputs(ctx, p.config, environment)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting environment outputs: %w", err)
 	}
@@ -227,7 +229,7 @@ func (p *ProvisionProvider) Deploy(ctx context.Context) (*provisioning.DeployRes
 
 	p.console.StopSpinner(ctx, spinnerMessage, input.StepDone)
 
-	outputs, err := p.manager.Outputs(ctx, environment)
+	outputs, err := p.manager.Outputs(ctx, p.config, environment)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting environment outputs: %w", err)
 	}
@@ -306,7 +308,7 @@ func (p *ProvisionProvider) Destroy(
 	}
 
 	// Get environment outputs to invalidate them after destroy
-	outputs, err := p.manager.Outputs(ctx, devCenterEnv)
+	outputs, err := p.manager.Outputs(ctx, p.config, devCenterEnv)
 	if err != nil {
 		return nil, fmt.Errorf("failed getting environment outputs: %w", err)
 	}
@@ -334,7 +336,7 @@ func (p *ProvisionProvider) Destroy(
 	p.console.StopSpinner(ctx, spinnerMessage, input.StepDone)
 
 	result := &provisioning.DestroyResult{
-		InvalidatedEnvKeys: maps.Keys(outputs),
+		InvalidatedEnvKeys: slices.Collect(maps.Keys(outputs)),
 	}
 
 	return result, nil
@@ -343,60 +345,65 @@ func (p *ProvisionProvider) Destroy(
 // EnsureEnv ensures that the environment is configured for the Dev Center provider.
 // Require selection for devcenter, project, catalog, environment type, and environment definition
 func (p *ProvisionProvider) EnsureEnv(ctx context.Context) error {
-	// Cache config values prior to prompting user
+	// Cache config values prior to prompting user so we can compare what is missing later
 	currentConfig := *p.config
-	updatedConfig, err := p.prompter.PromptForConfig(ctx)
+	err := p.prompter.PromptForConfig(ctx, p.config)
 	if err != nil {
 		return err
 	}
 
-	if updatedConfig.EnvironmentType == "" {
-		envType, err := p.prompter.PromptEnvironmentType(ctx, updatedConfig.Name, updatedConfig.Project)
+	if p.config.EnvironmentType == "" {
+		envType, err := p.prompter.PromptEnvironmentType(ctx, p.config.Name, p.config.Project)
 		if err != nil {
 			return err
 		}
-		updatedConfig.EnvironmentType = envType.Name
+		p.config.EnvironmentType = envType.Name
 	}
 
-	if updatedConfig.User == "" {
-		updatedConfig.User = "me"
+	if p.config.User == "" {
+		p.config.User = "me"
 	}
 
 	// Set any missing config values in environment configuration for future use
+	// Some values are set at the global / project level so we only want to set missing values in the environment config
 	if currentConfig.Name == "" {
-		if err := p.env.Config.Set(DevCenterNamePath, updatedConfig.Name); err != nil {
+		if err := p.env.Config.Set(DevCenterNamePath, p.config.Name); err != nil {
 			return err
 		}
 	}
 
 	if currentConfig.Project == "" {
-		if err := p.env.Config.Set(DevCenterProjectPath, updatedConfig.Project); err != nil {
+		if err := p.env.Config.Set(DevCenterProjectPath, p.config.Project); err != nil {
 			return err
 		}
 	}
 
 	if currentConfig.Catalog == "" {
-		if err := p.env.Config.Set(DevCenterCatalogPath, updatedConfig.Catalog); err != nil {
+		if err := p.env.Config.Set(DevCenterCatalogPath, p.config.Catalog); err != nil {
 			return err
 		}
 	}
 
 	if currentConfig.EnvironmentType == "" {
-		if err := p.env.Config.Set(DevCenterEnvTypePath, updatedConfig.EnvironmentType); err != nil {
+		if err := p.env.Config.Set(DevCenterEnvTypePath, p.config.EnvironmentType); err != nil {
 			return err
 		}
 	}
 
 	if currentConfig.EnvironmentDefinition == "" {
-		if err := p.env.Config.Set(DevCenterEnvDefinitionPath, updatedConfig.EnvironmentDefinition); err != nil {
+		if err := p.env.Config.Set(DevCenterEnvDefinitionPath, p.config.EnvironmentDefinition); err != nil {
 			return err
 		}
 	}
 
 	if currentConfig.User == "" {
-		if err := p.env.Config.Set(DevCenterUserPath, updatedConfig.User); err != nil {
+		if err := p.env.Config.Set(DevCenterUserPath, p.config.User); err != nil {
 			return err
 		}
+	}
+
+	if err := p.envManager.Save(ctx, p.env); err != nil {
+		return fmt.Errorf("failed saving environment: %w", err)
 	}
 
 	return nil
@@ -404,6 +411,12 @@ func (p *ProvisionProvider) EnsureEnv(ctx context.Context) error {
 
 // Polls for the ADE environment and ARM deployment to be created
 func (p *ProvisionProvider) pollForEnvironment(ctx context.Context, envName string) {
+	// Disable reporting progress if needed
+	if use, err := strconv.ParseBool(os.Getenv("AZD_DEBUG_PROVISION_PROGRESS_DISABLE")); err == nil && use {
+		log.Println("Disabling progress reporting since AZD_DEBUG_PROVISION_PROGRESS_DISABLE was set")
+		return
+	}
+
 	initialDelay := 3 * time.Second
 	regularDelay := 5 * time.Second
 	timer := time.NewTimer(initialDelay)
@@ -433,9 +446,15 @@ func (p *ProvisionProvider) pollForEnvironment(ctx context.Context, envName stri
 
 			// After the resource group has been created
 			// We can start polling for a new deployment that started after we started polling
-			deployment, err := p.manager.Deployment(ctx, environment, func(d *armresources.DeploymentExtended) bool {
-				return d.Properties.Timestamp.After(pollStartTime)
-			})
+			deployment, err := p.manager.Deployment(
+				ctx,
+				p.config,
+				environment,
+				func(d *azapi.ResourceDeployment) bool {
+					return d.ProvisioningState == azapi.DeploymentProvisioningStateRunning &&
+						d.Timestamp.After(pollStartTime)
+				},
+			)
 
 			if err != nil || deployment == nil {
 				timer.Reset(regularDelay)
@@ -459,7 +478,7 @@ func (p *ProvisionProvider) pollForProgress(ctx context.Context, deployment infr
 	}
 
 	// Report incremental progress
-	progressDisplay := provisioning.NewProvisioningProgressDisplay(p.resourceManager, p.console, deployment)
+	progressDisplay := p.deploymentManager.ProgressDisplay(deployment)
 
 	initialDelay := 3 * time.Second
 	regularDelay := 10 * time.Second
@@ -480,45 +499,6 @@ func (p *ProvisionProvider) pollForProgress(ctx context.Context, deployment infr
 			timer.Reset(regularDelay)
 		}
 	}
-}
-
-func mapBicepTypeToInterfaceType(s string) provisioning.ParameterType {
-	switch s {
-	case "String", "string", "secureString", "securestring":
-		return provisioning.ParameterTypeString
-	case "Bool", "bool":
-		return provisioning.ParameterTypeBoolean
-	case "Int", "int":
-		return provisioning.ParameterTypeNumber
-	case "Object", "object", "secureObject", "secureobject":
-		return provisioning.ParameterTypeObject
-	case "Array", "array":
-		return provisioning.ParameterTypeArray
-	default:
-		panic(fmt.Sprintf("unexpected bicep type: '%s'", s))
-	}
-}
-
-// Creates a normalized view of the azure output parameters and resolves inconsistencies in the output parameter name
-// casings.
-func createOutputParameters(
-	deploymentOutputs map[string]azapi.AzCliDeploymentOutput,
-) map[string]provisioning.OutputParameter {
-	outputParams := map[string]provisioning.OutputParameter{}
-
-	for key, azureParam := range deploymentOutputs {
-		// To support BYOI (bring your own infrastructure) scenarios we will default to UPPER when canonical casing
-		// is not found in the parameters file to workaround strange azure behavior with OUTPUT values that look
-		// like `azurE_RESOURCE_GROUP`
-		paramName := strings.ToUpper(key)
-
-		outputParams[paramName] = provisioning.OutputParameter{
-			Type:  mapBicepTypeToInterfaceType(azureParam.Type),
-			Value: azureParam.Value,
-		}
-	}
-
-	return outputParams
 }
 
 func createInputParameters(

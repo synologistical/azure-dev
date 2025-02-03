@@ -14,6 +14,7 @@ import (
 
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools/dotnet"
+	"github.com/azure/azure-dev/cli/azd/pkg/tools/maven"
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -52,8 +53,9 @@ type Dependency string
 const (
 	JsReact   Dependency = "react"
 	JsAngular Dependency = "angular"
-	JsVue     Dependency = "vuejs"
 	JsJQuery  Dependency = "jquery"
+	JsVite    Dependency = "vite"
+	JsNext    Dependency = "next"
 
 	PyFlask   Dependency = "flask"
 	PyDjango  Dependency = "django"
@@ -63,13 +65,13 @@ const (
 var WebUIFrameworks = map[Dependency]struct{}{
 	JsReact:   {},
 	JsAngular: {},
-	JsVue:     {},
 	JsJQuery:  {},
+	JsVite:    {},
 }
 
 func (f Dependency) Language() Language {
 	switch f {
-	case JsReact, JsAngular, JsVue, JsJQuery:
+	case JsReact, JsAngular, JsJQuery, JsVite:
 		return JavaScript
 	}
 
@@ -82,10 +84,12 @@ func (f Dependency) Display() string {
 		return "React"
 	case JsAngular:
 		return "Angular"
-	case JsVue:
-		return "Vue.js"
 	case JsJQuery:
 		return "JQuery"
+	case JsVite:
+		return "Vite"
+	case JsNext:
+		return "Next.js"
 	}
 
 	return ""
@@ -158,8 +162,14 @@ func (p *Project) HasWebUIFramework() bool {
 	return false
 }
 
+type Port struct {
+	Number   int
+	Protocol string
+}
+
 type Docker struct {
-	Path string
+	Path  string
+	Ports []Port
 }
 
 type projectDetector interface {
@@ -170,13 +180,15 @@ type projectDetector interface {
 var allDetectors = []projectDetector{
 	// Order here determines precedence when two projects are in the same directory.
 	// This is unlikely to occur in practice, but reordering could help to break the tie in these cases.
-	&javaDetector{},
+	&javaDetector{
+		mvnCli: maven.NewCli(exec.NewCommandRunner(nil)),
+	},
 	&dotNetAppHostDetector{
 		// TODO(ellismg): Remove ambient authority.
-		dotnetCli: dotnet.NewDotNetCli(exec.NewCommandRunner(nil)),
+		dotnetCli: dotnet.NewCli(exec.NewCommandRunner(nil)),
 	},
 	&dotNetDetector{
-		dotnetCli: dotnet.NewDotNetCli(exec.NewCommandRunner(nil)),
+		dotnetCli: dotnet.NewCli(exec.NewCommandRunner(nil)),
 	},
 	&pythonDetector{},
 	&javaScriptDetector{},
@@ -256,7 +268,7 @@ func detectAny(ctx context.Context, detectors []projectDetector, path string, en
 			log.Printf("Found project %s at %s", project.Language, path)
 
 			// docker is an optional property of a project, and thus is different than other detectors
-			docker, err := detectDocker(path, entries)
+			docker, err := detectDockerInDirectory(path, entries)
 			if err != nil {
 				return nil, fmt.Errorf("detecting docker project: %w", err)
 			}
@@ -274,18 +286,9 @@ func detectAny(ctx context.Context, detectors []projectDetector, path string, en
 // path is the directory being visited. entries are the file entries (including directories) in that directory.
 type walkDirFunc func(path string, entries []fs.DirEntry) error
 
-// walkDirectories walks the file tree rooted at root, calling fn for each directory in the tree, including root.
+// walkDirectories recursively descends the file tree located at path, calling fn for each directory in the tree.
 // The directories are walked in lexical order.
-func walkDirectories(root string, fn walkDirFunc) error {
-	info, err := os.Lstat(root)
-	if err != nil {
-		return err
-	}
-
-	return walkDirRecursive(root, fs.FileInfoToDirEntry(info), fn)
-}
-
-func walkDirRecursive(path string, d fs.DirEntry, fn walkDirFunc) error {
+func walkDirectories(path string, fn walkDirFunc) error {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return fmt.Errorf("reading directory: %w", err)
@@ -303,7 +306,7 @@ func walkDirRecursive(path string, d fs.DirEntry, fn walkDirFunc) error {
 	for _, entry := range entries {
 		if entry.IsDir() {
 			dir := filepath.Join(path, entry.Name())
-			err = walkDirRecursive(dir, entry, fn)
+			err = walkDirectories(dir, fn)
 			if err != nil {
 				return err
 			}

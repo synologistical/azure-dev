@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package repository
 
 import (
@@ -5,11 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/AlecAivazis/survey/v2/terminal"
 	"github.com/azure/azure-dev/cli/azd/internal/appdetect"
+	"github.com/azure/azure-dev/cli/azd/internal/cmd/add"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
@@ -17,8 +25,6 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/fatih/color"
 	"go.opentelemetry.io/otel/attribute"
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
 )
 
 func projectDisplayName(p appdetect.Project) string {
@@ -62,12 +68,12 @@ func (d *detectConfirm) Init(projects []appdetect.Project, root string) {
 	d.root = root
 
 	for _, project := range projects {
-		if _, supported := languageMap[project.Language]; supported {
+		if _, supported := add.LanguageMap[project.Language]; supported {
 			d.Services = append(d.Services, project)
 		}
 
 		for _, dbType := range project.DatabaseDeps {
-			if _, supported := dbMap[dbType]; supported {
+			if _, supported := add.DbMap[dbType]; supported {
 				d.Databases[dbType] = EntryKindDetected
 			}
 		}
@@ -104,6 +110,28 @@ func (d *detectConfirm) Confirm(ctx context.Context) error {
 		if err := d.render(ctx); err != nil {
 			return err
 		}
+
+		if len(d.Services) == 0 && !d.modified {
+			confirmAdd, err := d.console.Confirm(ctx, input.ConsoleOptions{
+				Message:      "Add an undetected service?",
+				DefaultValue: true,
+			})
+			if err != nil {
+				return err
+			}
+
+			if !confirmAdd {
+				return fmt.Errorf("cancelled")
+			}
+
+			if err := d.add(ctx); err != nil {
+				return err
+			}
+
+			tracing.IncrementUsageAttribute(fields.AppInitModifyAddCount.Int(1))
+			continue
+		}
+
 		d.modified = false
 
 		continueOption, err := d.console.Select(ctx, input.ConsoleOptions{
@@ -155,6 +183,8 @@ func (d *detectConfirm) render(ctx context.Context) error {
 		}
 		d.console.StopSpinner(ctx, "Revising detected services", input.StepDone)
 		d.console.Message(ctx, "\n"+output.WithBold("Detected services (Revised):")+"\n")
+	} else if len(d.Services) == 0 {
+		d.console.Message(ctx, "\n"+output.WithWarningFormat("No services were automatically detected.")+"\n")
 	} else {
 		d.console.Message(ctx, "\n"+output.WithBold("Detected services:")+"\n")
 	}
@@ -219,7 +249,7 @@ func (d *detectConfirm) remove(ctx context.Context) error {
 			modifyOptions, fmt.Sprintf("%s in %s", projectDisplayName(svc), relSafe(d.root, svc.Path)))
 	}
 
-	displayDbs := maps.Keys(d.Databases)
+	displayDbs := slices.Collect(maps.Keys(d.Databases))
 	for _, db := range displayDbs {
 		modifyOptions = append(modifyOptions, db.Display())
 	}
@@ -237,6 +267,7 @@ func (d *detectConfirm) remove(ctx context.Context) error {
 		confirm, err := d.console.Confirm(ctx, input.ConsoleOptions{
 			Message: fmt.Sprintf(
 				"Remove %s in %s?", projectDisplayName(svc), relSafe(d.root, svc.Path)),
+			DefaultValue: true,
 		})
 		if err != nil {
 			return err
@@ -254,6 +285,7 @@ func (d *detectConfirm) remove(ctx context.Context) error {
 		confirm, err := d.console.Confirm(ctx, input.ConsoleOptions{
 			Message: fmt.Sprintf(
 				"Remove %s?", db.Display()),
+			DefaultValue: true,
 		})
 		if err != nil {
 			return err
@@ -282,26 +314,26 @@ func (d *detectConfirm) remove(ctx context.Context) error {
 }
 
 func (d *detectConfirm) add(ctx context.Context) error {
-	languages := maps.Keys(languageMap)
-	slices.SortFunc(languages, func(a, b appdetect.Language) bool {
-		return a.Display() < b.Display()
-	})
+	languages := slices.SortedFunc(maps.Keys(add.LanguageMap),
+		func(a, b appdetect.Language) int {
+			return strings.Compare(a.Display(), b.Display())
+		})
 
-	frameworks := maps.Keys(appdetect.WebUIFrameworks)
-	slices.SortFunc(frameworks, func(a, b appdetect.Dependency) bool {
-		return a.Display() < b.Display()
-	})
+	frameworks := slices.SortedFunc(maps.Keys(appdetect.WebUIFrameworks),
+		func(a, b appdetect.Dependency) int {
+			return strings.Compare(a.Display(), b.Display())
+		})
 
 	// only include databases not already added
-	allDbs := maps.Keys(dbMap)
+	allDbs := slices.Collect(maps.Keys(add.DbMap))
 	databases := make([]appdetect.DatabaseDep, 0, len(allDbs))
 	for _, db := range allDbs {
 		if _, ok := d.Databases[db]; !ok {
 			databases = append(databases, db)
 		}
 	}
-	slices.SortFunc(databases, func(a, b appdetect.DatabaseDep) bool {
-		return a.Display() < b.Display()
+	slices.SortFunc(databases, func(a, b appdetect.DatabaseDep) int {
+		return strings.Compare(a.Display(), b.Display())
 	})
 
 	selections := make([]string, 0, len(languages)+len(frameworks)+len(databases))
@@ -405,6 +437,27 @@ func (d *detectConfirm) add(ctx context.Context) error {
 			}
 
 			return nil
+		}
+	}
+
+	// Provide additional validation for project selection
+	if s.Language == appdetect.Python {
+		if _, err := os.Stat(filepath.Join(path, "requirements.txt")); errors.Is(err, os.ErrNotExist) {
+			d.console.Message(
+				ctx,
+				fmt.Sprintf("No '%s' file found in %s.",
+					output.WithBold("requirements.txt"),
+					output.WithHighLightFormat(path)))
+			confirm, err := d.console.Confirm(ctx, input.ConsoleOptions{
+				Message: "This file may be required when deploying to Azure. Continue?",
+			})
+			if err != nil {
+				return err
+			}
+
+			if !confirm {
+				return fmt.Errorf("cancelled")
+			}
 		}
 	}
 

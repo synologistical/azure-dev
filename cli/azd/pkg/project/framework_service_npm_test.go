@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package project
 
 import (
@@ -7,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/azure/azure-dev/cli/azd/pkg/async"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/osutil"
@@ -30,14 +34,14 @@ func Test_NpmProject_Restore(t *testing.T) {
 		})
 
 	env := environment.New("test")
-	npmCli := npm.NewNpmCli(mockContext.CommandRunner)
+	npmCli := npm.NewCli(mockContext.CommandRunner)
 	serviceConfig := createTestServiceConfig("./src/api", AppServiceTarget, ServiceLanguageTypeScript)
 
 	npmProject := NewNpmProject(npmCli, env)
-	restoreTask := npmProject.Restore(*mockContext.Context, serviceConfig)
-	logProgress(restoreTask)
+	result, err := logProgress(t, func(progess *async.Progress[ServiceProgress]) (*ServiceRestoreResult, error) {
+		return npmProject.Restore(*mockContext.Context, serviceConfig, progess)
+	})
 
-	result, err := restoreTask.Await()
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "npm", runArgs.Cmd)
@@ -62,14 +66,16 @@ func Test_NpmProject_Build(t *testing.T) {
 		})
 
 	env := environment.New("test")
-	npmCli := npm.NewNpmCli(mockContext.CommandRunner)
+	npmCli := npm.NewCli(mockContext.CommandRunner)
 	serviceConfig := createTestServiceConfig("./src/api", AppServiceTarget, ServiceLanguageTypeScript)
 
 	npmProject := NewNpmProject(npmCli, env)
-	buildTask := npmProject.Build(*mockContext.Context, serviceConfig, nil)
-	logProgress(buildTask)
+	result, err := logProgress(
+		t, func(progress *async.Progress[ServiceProgress]) (*ServiceBuildResult, error) {
+			return npmProject.Build(*mockContext.Context, serviceConfig, nil, progress)
+		},
+	)
 
-	result, err := buildTask.Await()
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, "npm", runArgs.Cmd)
@@ -96,7 +102,7 @@ func Test_NpmProject_Package(t *testing.T) {
 		})
 
 	env := environment.New("test")
-	npmCli := npm.NewNpmCli(mockContext.CommandRunner)
+	npmCli := npm.NewCli(mockContext.CommandRunner)
 	serviceConfig := createTestServiceConfig("./src/api", AppServiceTarget, ServiceLanguageTypeScript)
 	err := os.MkdirAll(serviceConfig.Path(), osutil.PermissionDirectory)
 	require.NoError(t, err)
@@ -104,16 +110,17 @@ func Test_NpmProject_Package(t *testing.T) {
 	require.NoError(t, err)
 
 	npmProject := NewNpmProject(npmCli, env)
-	packageTask := npmProject.Package(
-		*mockContext.Context,
-		serviceConfig,
-		&ServiceBuildResult{
-			BuildOutputPath: serviceConfig.Path(),
-		},
-	)
-	logProgress(packageTask)
+	result, err := logProgress(t, func(progress *async.Progress[ServiceProgress]) (*ServicePackageResult, error) {
+		return npmProject.Package(
+			*mockContext.Context,
+			serviceConfig,
+			&ServiceBuildResult{
+				BuildOutputPath: serviceConfig.Path(),
+			},
+			progress,
+		)
+	})
 
-	result, err := packageTask.Await()
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.NotEmpty(t, result.PackagePath)

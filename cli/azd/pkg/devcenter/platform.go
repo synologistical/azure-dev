@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
@@ -5,13 +8,14 @@ import (
 	"os"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resourcegraph/armresourcegraph"
-	"github.com/azure/azure-dev/cli/azd/pkg/azsdk"
+	"github.com/azure/azure-dev/cli/azd/pkg/auth"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/config"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
-	"github.com/azure/azure-dev/cli/azd/pkg/httputil"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/ioc"
 	"github.com/azure/azure-dev/cli/azd/pkg/lazy"
@@ -45,7 +49,7 @@ func (p *Platform) IsEnabled() bool {
 // ConfigureContainer configures the IoC container for the devcenter platform components
 func (p *Platform) ConfigureContainer(container *ioc.NestedContainer) error {
 	// DevCenter Config
-	container.RegisterSingleton(func(
+	container.MustRegisterTransient(func(
 		ctx context.Context,
 		lazyAzdCtx *lazy.Lazy[*azdcontext.AzdContext],
 		userConfigManager config.UserConfigManager,
@@ -60,7 +64,7 @@ func (p *Platform) ConfigureContainer(container *ioc.NestedContainer) error {
 
 		// Shell environment variables
 		envVarConfig := &Config{
-			Name:                  os.Getenv(DevCenterCatalogEnvName),
+			Name:                  os.Getenv(DevCenterNameEnvName),
 			Project:               os.Getenv(DevCenterProjectEnvName),
 			Catalog:               os.Getenv(DevCenterCatalogEnvName),
 			EnvironmentType:       os.Getenv(DevCenterEnvTypeEnvName),
@@ -130,14 +134,14 @@ func (p *Platform) ConfigureContainer(container *ioc.NestedContainer) error {
 	})
 
 	// Override default provision provider
-	container.RegisterSingleton(func() provisioning.DefaultProviderResolver {
+	container.MustRegisterSingleton(func() provisioning.DefaultProviderResolver {
 		return func() (provisioning.ProviderKind, error) {
 			return ProvisionKindDevCenter, nil
 		}
 	})
 
 	// Override default template sources
-	container.RegisterSingleton(func() *templates.SourceOptions {
+	container.MustRegisterSingleton(func() *templates.SourceOptions {
 		return &templates.SourceOptions{
 			DefaultSources:        []*templates.SourceConfig{SourceDevCenter},
 			LoadConfiguredSources: false,
@@ -145,42 +149,43 @@ func (p *Platform) ConfigureContainer(container *ioc.NestedContainer) error {
 	})
 
 	// Configure remote environment storage
-	container.RegisterSingleton(func() *state.RemoteConfig {
+	container.MustRegisterSingleton(func() *state.RemoteConfig {
 		return &state.RemoteConfig{
 			Backend: string(RemoteKindDevCenter),
 		}
 	})
 
 	// Provision Provider
-	if err := container.RegisterNamedSingleton(string(ProvisionKindDevCenter), NewProvisionProvider); err != nil {
-		return err
-	}
+	container.MustRegisterNamedTransient(string(ProvisionKindDevCenter), NewProvisionProvider)
 
 	// Remote Environment Storage
-	if err := container.RegisterNamedSingleton(string(RemoteKindDevCenter), NewEnvironmentStore); err != nil {
-		return err
-	}
+	container.MustRegisterNamedTransient(string(RemoteKindDevCenter), NewEnvironmentStore)
 
 	// Template Sources
-	if err := container.RegisterNamedSingleton(string(SourceKindDevCenter), NewTemplateSource); err != nil {
-		return err
-	}
+	container.MustRegisterNamedTransient(string(SourceKindDevCenter), NewTemplateSource)
 
-	container.RegisterSingleton(NewManager)
-	container.RegisterSingleton(NewPrompter)
+	container.MustRegisterSingleton(NewManager)
+	container.MustRegisterSingleton(NewPrompter)
 
 	// Other devcenter components
-	container.RegisterSingleton(func(
-		ctx context.Context,
-		credential azcore.TokenCredential,
-		httpClient httputil.HttpClient,
-		resourceGraphClient *armresourcegraph.Client,
+	container.MustRegisterSingleton(func(
+		credentialProvider auth.MultiTenantCredentialProvider,
+		policyClientOptions *azcore.ClientOptions,
+		armClientOptions *arm.ClientOptions,
+		cloud *cloud.Cloud,
 	) (devcentersdk.DevCenterClient, error) {
-		options := azsdk.
-			DefaultClientOptionsBuilder(ctx, httpClient, "azd").
-			BuildCoreClientOptions()
+		// Use home tenant ID
+		cred, err := credentialProvider.GetTokenCredential(context.Background(), "")
+		if err != nil {
+			return nil, err
+		}
 
-		return devcentersdk.NewDevCenterClient(credential, options, resourceGraphClient)
+		resourceGraphClient, err := armresourcegraph.NewClient(cred, armClientOptions)
+		if err != nil {
+			return nil, err
+		}
+
+		return devcentersdk.NewDevCenterClient(cred, policyClientOptions, resourceGraphClient, cloud)
 	})
 
 	return nil

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package powershell
 
 import (
@@ -5,7 +8,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
@@ -23,10 +26,12 @@ func Test_Powershell_Execute(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 
+		// #nosec G101
+		userPwsh := "pwsh -NoProfile"
 		mockContext.CommandRunner.When(func(args exec.RunArgs, command string) bool {
 			return true
 		}).RespondFn(func(args exec.RunArgs) (exec.RunResult, error) {
-			require.Equal(t, "pwsh", args.Cmd)
+			require.Equal(t, userPwsh, args.Cmd)
 			require.Equal(t, workingDir, args.Cwd)
 			require.Equal(t, scriptPath, args.Args[0])
 			require.Equal(t, env, args.Env)
@@ -38,7 +43,7 @@ func Test_Powershell_Execute(t *testing.T) {
 		runResult, err := PowershellScript.Execute(
 			*mockContext.Context,
 			scriptPath,
-			tools.ExecOptions{Interactive: convert.RefOf(true)},
+			tools.ExecOptions{UserPwsh: userPwsh, Interactive: to.Ptr(true)},
 		)
 
 		require.NotNil(t, runResult)
@@ -58,7 +63,7 @@ func Test_Powershell_Execute(t *testing.T) {
 		runResult, err := PowershellScript.Execute(
 			*mockContext.Context,
 			scriptPath,
-			tools.ExecOptions{Interactive: convert.RefOf(true)},
+			tools.ExecOptions{Interactive: to.Ptr(true)},
 		)
 
 		require.Equal(t, 1, runResult.ExitCode)
@@ -69,8 +74,8 @@ func Test_Powershell_Execute(t *testing.T) {
 		name  string
 		value tools.ExecOptions
 	}{
-		{name: "Interactive", value: tools.ExecOptions{Interactive: convert.RefOf(true)}},
-		{name: "NonInteractive", value: tools.ExecOptions{Interactive: convert.RefOf(false)}},
+		{name: "Interactive", value: tools.ExecOptions{Interactive: to.Ptr(true)}},
+		{name: "NonInteractive", value: tools.ExecOptions{Interactive: to.Ptr(false)}},
 	}
 
 	for _, test := range tests {

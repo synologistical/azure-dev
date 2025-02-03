@@ -7,26 +7,26 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
 	"github.com/blang/semver/v4"
 )
 
-type PythonCli struct {
+type Cli struct {
 	commandRunner exec.CommandRunner
 }
 
-func NewPythonCli(commandRunner exec.CommandRunner) *PythonCli {
-	return &PythonCli{
+func NewCli(commandRunner exec.CommandRunner) *Cli {
+	return &Cli{
 		commandRunner: commandRunner,
 	}
 }
 
-func (cli *PythonCli) versionInfo() tools.VersionInfo {
+func (cli *Cli) versionInfo() tools.VersionInfo {
 	return tools.VersionInfo{
 		MinimumVersion: semver.Version{
 			Major: 3,
@@ -36,7 +36,7 @@ func (cli *PythonCli) versionInfo() tools.VersionInfo {
 	}
 }
 
-func (cli *PythonCli) CheckInstalled(ctx context.Context) error {
+func (cli *Cli) CheckInstalled(ctx context.Context) error {
 	pyString, err := checkPath()
 	if err != nil {
 		return err
@@ -59,56 +59,25 @@ func (cli *PythonCli) CheckInstalled(ctx context.Context) error {
 	return nil
 }
 
-func (cli *PythonCli) InstallUrl() string {
+func (cli *Cli) InstallUrl() string {
 	return "https://wiki.python.org/moin/BeginnersGuide/Download"
 }
 
-func (cli *PythonCli) Name() string {
+func (cli *Cli) Name() string {
 	return "Python CLI"
 }
 
-func (cli *PythonCli) InstallRequirements(ctx context.Context, workingDir, environment, requirementFile string) error {
-	var err error
-
-	pyString, err := checkPath()
-	if err != nil {
-		return err
-	}
-
-	if runtime.GOOS == "windows" {
-		// Unfortunately neither cmd.exe, nor PowerShell provide a straightforward way to use a script
-		// to modify environment for command(s) in a command list.
-		// So we are going to cheat and replicate the core functionality of Python venv scripts here,
-		// which boils down to setting VIRTUAL_ENV environment variable.
-		absWorkingDir, pathErr := filepath.Abs(workingDir)
-		if pathErr != nil {
-			return pathErr
-		}
-
-		vEnvSetting := fmt.Sprintf("VIRTUAL_ENV=%s", path.Join(absWorkingDir, environment))
-
-		runArgs := exec.
-			NewRunArgs(pyString, "-m", "pip", "install", "-r", requirementFile).
-			WithCwd(workingDir).
-			WithEnv([]string{vEnvSetting})
-
-		_, err = cli.commandRunner.Run(ctx, runArgs)
-	} else {
-		envActivation := ". " + path.Join(environment, "bin", "activate")
-		installCmd := fmt.Sprintf("%s -m pip install -r %s", pyString, requirementFile)
-		commands := []string{envActivation, installCmd}
-
-		runArgs := exec.NewRunArgs(pyString).WithCwd(workingDir)
-		_, err = cli.commandRunner.RunList(ctx, commands, runArgs)
-	}
-
+func (cli *Cli) InstallRequirements(ctx context.Context, workingDir, environment, requirementFile string) error {
+	args := []string{"-m", "pip", "install", "-r", requirementFile}
+	_, err := cli.Run(ctx, workingDir, environment, args...)
 	if err != nil {
 		return fmt.Errorf("failed to install requirements for project '%s': %w", workingDir, err)
 	}
+
 	return nil
 }
 
-func (cli *PythonCli) CreateVirtualEnv(ctx context.Context, workingDir, name string) error {
+func (cli *Cli) CreateVirtualEnv(ctx context.Context, workingDir, name string) error {
 	pyString, err := checkPath()
 	if err != nil {
 		return err
@@ -127,6 +96,39 @@ func (cli *PythonCli) CreateVirtualEnv(ctx context.Context, workingDir, name str
 			err)
 	}
 	return nil
+}
+
+func (cli *Cli) Run(
+	ctx context.Context,
+	workingDir string,
+	environment string,
+	args ...string,
+) (*exec.RunResult, error) {
+	pyString, err := checkPath()
+	if err != nil {
+		return nil, err
+	}
+
+	var envActivationCmd string
+
+	// Windows & Posix have different activation scripts
+	if runtime.GOOS == "windows" {
+		envActivationCmd = filepath.Join(environment, "Scripts", "activate")
+	} else {
+		envActivationCmd = ". " + filepath.Join(environment, "bin", "activate")
+	}
+
+	runCmd := strings.Join(append([]string{pyString}, args...), " ")
+	// We need to ensure the virtual environment is activated before running the script
+	commands := []string{envActivationCmd, runCmd}
+	runArgs := exec.NewRunArgs("").WithCwd(workingDir)
+	runResult, err := cli.commandRunner.RunList(ctx, commands, runArgs)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to run Python script: %w", err)
+	}
+
+	return &runResult, nil
 }
 
 func checkPath() (pyString string, err error) {

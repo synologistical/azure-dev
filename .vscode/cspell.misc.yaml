@@ -39,3 +39,5 @@ overrides:
           - myapp
           - azdev
           - myimage
+          - azureai
+          - entra

@@ -18,12 +18,15 @@ import (
 	"github.com/MakeNowJust/heredoc/v2"
 	"github.com/azure/azure-dev/cli/azd/cmd/actions"
 	"github.com/azure/azure-dev/cli/azd/internal"
+	"github.com/azure/azure-dev/cli/azd/internal/runcontext"
 	"github.com/azure/azure-dev/cli/azd/pkg/account"
 	"github.com/azure/azure-dev/cli/azd/pkg/auth"
 	"github.com/azure/azure-dev/cli/azd/pkg/contracts"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
+	"github.com/azure/azure-dev/cli/azd/pkg/oneauth"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
+	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools/github"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -31,6 +34,25 @@ import (
 
 // The parent of the login command.
 const loginCmdParentAnnotation = "loginCmdParent"
+
+// azurePipelinesClientIDEnvVarName is the name of the environment variable that contains the client ID for the principal
+// to use when authenticating with Azure Pipelines via OIDC. It is set by both the AzureCLI@2 and AzurePowerShell@5 tasks
+// when using a service connection or can be set manually when not using these tasks.
+const azurePipelinesClientIDEnvVarName = "AZURESUBSCRIPTION_CLIENT_ID"
+
+// azurePipelinesTenantIDEnvVarName is the name of the environment variable that contains the tenant ID for the principal
+// to use when authenticating with Azure Pipelines via OIDC. It is set by both the AzureCLI@2 and AzurePowerShell@5 tasks
+// when using a service connection or can be set manually when not using these tasks.
+const azurePipelinesTenantIDEnvVarName = "AZURESUBSCRIPTION_TENANT_ID"
+
+// AzurePipelinesServiceConnectionNameEnvVarName is the name of the environment variable that contains the name of the
+// service connection to use when authenticating with Azure Pipelines via OIDC. It is set by both the AzureCLI@2 and
+// AzurePowerShell@5 tasks when using a service connection or can be set manually when not using these tasks.
+const azurePipelinesServiceConnectionIDEnvVarName = "AZURESUBSCRIPTION_SERVICE_CONNECTION_ID"
+
+// azurePipelinesProvider is the name of the federated token provider to use when authenticating with Azure Pipelines via
+// OIDC.
+const azurePipelinesProvider string = "azure-pipelines"
 
 type authLoginFlags struct {
 	loginFlags
@@ -45,6 +67,8 @@ func newAuthLoginFlags(cmd *cobra.Command, global *internal.GlobalCommandOptions
 
 type loginFlags struct {
 	onlyCheckStatus        bool
+	browser                bool
+	managedIdentity        bool
 	useDeviceCode          boolPtr
 	tenantID               string
 	clientID               string
@@ -118,6 +142,12 @@ func (lf *loginFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandO
 	)
 	// ensure the flag behaves as a common boolean flag which is set to true when used without any other arg
 	f.NoOptDefVal = "true"
+	local.BoolVar(
+		&lf.managedIdentity,
+		"managed-identity",
+		false,
+		"Use a managed identity to authenticate.",
+	)
 	local.StringVar(&lf.clientID, "client-id", "", "The client id for the service principal to authenticate with.")
 	local.Var(
 		&lf.clientSecret,
@@ -150,6 +180,9 @@ func (lf *loginFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandO
 		"redirect-port",
 		0,
 		"Choose the port to be used as part of the redirect URI during interactive login.")
+	if oneauth.Supported {
+		local.BoolVar(&lf.browser, "browser", false, "Authenticate in a web browser instead of an integrated dialog.")
+	}
 
 	lf.global = global
 }
@@ -170,9 +203,13 @@ func newLoginCmd(parent string) *cobra.Command {
 
 		When run without any arguments, log in interactively using a browser. To log in using a device code, pass
 		--use-device-code.
-		
-		To log in as a service principal, pass --client-id and --tenant-id as well as one of: --client-secret, 
+
+		To log in as a service principal, pass --client-id and --tenant-id as well as one of: --client-secret,
 		--client-certificate, or --federated-credential-provider.
+
+		To log in using a managed identity, pass --managed-identity, which will use the system assigned managed identity.
+		To use a user assigned managed identity, pass --client-id in addition to --managed-identity with the client id of
+		the user assigned managed identity you wish to use.
 		`),
 		Annotations: map[string]string{
 			loginCmdParentAnnotation: parent,
@@ -241,11 +278,9 @@ func newLoginAction(
 	}
 }
 
-const cLoginSuccessMessage = "Logged in to Azure."
-
 func (la *loginAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 	if len(la.flags.scopes) == 0 {
-		la.flags.scopes = auth.LoginScopes
+		la.flags.scopes = la.authManager.LoginScopes()
 	}
 
 	if la.annotations[loginCmdParentAnnotation] == "" {
@@ -284,20 +319,30 @@ func (la *loginAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 			var msg string
 			switch res.Status {
 			case contracts.LoginStatusSuccess:
-				msg = cLoginSuccessMessage
+				msg = "Logged in to Azure"
 			case contracts.LoginStatusUnauthenticated:
-				msg = "Not logged in, run `azd auth login` to login to Azure."
+				msg = "Not logged in, run `azd auth login` to login to Azure"
 			default:
 				panic("Unhandled login status")
 			}
 
-			fmt.Fprintln(la.console.Handles().Stdout, msg)
+			// get user account information - login --check-status
+			details, err := la.authManager.LogInDetails(ctx)
+
+			// error getting user account or not logged in
+			if err != nil {
+				log.Printf("error: getting signed in account: %v", err)
+				fmt.Fprintln(la.console.Handles().Stdout, msg)
+				return nil, nil
+			}
+
+			// only print the message if the user is logged in
+			la.console.MessageUxItem(ctx, &ux.LoggedIn{
+				LoggedInAs: details.Account,
+				LoginType:  ux.LoginType(details.LoginType),
+			})
 			return nil, nil
 		}
-	}
-
-	if err := la.accountSubManager.ClearSubscriptions(ctx); err != nil {
-		log.Printf("failed clearing subscriptions: %v", err)
 	}
 
 	if err := la.login(ctx); err != nil {
@@ -308,34 +353,34 @@ func (la *loginAction) Run(ctx context.Context) (*actions.ActionResult, error) {
 		return nil, err
 	}
 
-	// Rehydrate or clear the account's subscriptions cache.
-	// The caching is done here to increase responsiveness of listing subscriptions (during azd init).
-	// It also allows an implicit command for the user to refresh cached subscriptions.
-	if la.flags.clientID == "" {
-		// Deleting subscriptions on file is very unlikely to fail, unless there are serious filesystem issues.
-		// If this does fail, we want the user to be aware of this. Like other stored azd account data,
-		// stored subscriptions are currently tied to the OS user, and not the individual account being logged in,
-		// this means cross-contamination is possible.
-		if err := la.accountSubManager.ClearSubscriptions(ctx); err != nil {
-			return nil, err
-		}
+	forceRefresh := false
+	if v, err := strconv.ParseBool(os.Getenv("AZD_DEBUG_LOGIN_FORCE_SUBSCRIPTION_REFRESH")); err == nil && v {
+		forceRefresh = true
+	}
 
-		err := la.accountSubManager.RefreshSubscriptions(ctx)
-		if err != nil {
+	if la.flags.clientID == "" || forceRefresh {
+		// Update the subscriptions cache for regular users (i.e. non-service-principals).
+		// The caching is done here to increase responsiveness of listing subscriptions in the application.
+		// It also allows an implicit command for the user to refresh cached subscriptions.
+		if err := la.accountSubManager.RefreshSubscriptions(ctx); err != nil {
 			// If this fails, the subscriptions will still be loaded on-demand.
 			// erroring out when the user interacts with subscriptions is much more user-friendly.
 			log.Printf("failed retrieving subscriptions: %v", err)
 		}
-	} else {
-		// Service principals do not typically require subscription caching (running in CI scenarios)
-		// We simply clear the cache, which is much faster than rehydrating.
-		err := la.accountSubManager.ClearSubscriptions(ctx)
-		if err != nil {
-			log.Printf("failed clearing subscriptions: %v", err)
-		}
 	}
 
-	la.console.Message(ctx, cLoginSuccessMessage)
+	details, err := la.authManager.LogInDetails(ctx)
+
+	// error getting user account, successful log in
+	if err != nil {
+		log.Printf("error: getting signed in account: %v", err)
+		la.console.Message(ctx, "Logged in to Azure")
+		return nil, nil
+	}
+	la.console.MessageUxItem(ctx, &ux.LoggedIn{
+		LoggedInAs: details.Account,
+		LoginType:  ux.LoginType(details.LoginType),
+	})
 	return nil, nil
 }
 
@@ -394,7 +439,29 @@ func runningOnCodespacesBrowser(ctx context.Context, commandRunner exec.CommandR
 }
 
 func (la *loginAction) login(ctx context.Context) error {
-	if la.flags.clientID != "" {
+	if la.flags.federatedTokenProvider == azurePipelinesProvider {
+		if la.flags.clientID == "" {
+			log.Printf("setting client id from environment variable %s", azurePipelinesClientIDEnvVarName)
+			la.flags.clientID = os.Getenv(azurePipelinesClientIDEnvVarName)
+		}
+
+		if la.flags.tenantID == "" {
+			log.Printf("setting tenant id from environment variable %s", azurePipelinesClientIDEnvVarName)
+			la.flags.tenantID = os.Getenv(azurePipelinesTenantIDEnvVarName)
+		}
+	}
+
+	if la.flags.managedIdentity {
+		if _, err := la.authManager.LoginWithManagedIdentity(
+			ctx, la.flags.clientID,
+		); err != nil {
+			return fmt.Errorf("logging in: %w", err)
+		}
+
+		return nil
+	}
+
+	if !la.flags.managedIdentity && la.flags.clientID != "" {
 		if la.flags.tenantID == "" {
 			return errors.New("must set both `client-id` and `tenant-id` for service principal login")
 		}
@@ -446,9 +513,22 @@ func (la *loginAction) login(ctx context.Context) error {
 			); err != nil {
 				return fmt.Errorf("logging in: %w", err)
 			}
-		case la.flags.federatedTokenProvider != "":
-			if _, err := la.authManager.LoginWithServicePrincipalFederatedTokenProvider(
-				ctx, la.flags.tenantID, la.flags.clientID, la.flags.federatedTokenProvider,
+		case la.flags.federatedTokenProvider == "github":
+			if _, err := la.authManager.LoginWithGitHubFederatedTokenProvider(
+				ctx, la.flags.tenantID, la.flags.clientID,
+			); err != nil {
+				return fmt.Errorf("logging in: %w", err)
+			}
+		case la.flags.federatedTokenProvider == azurePipelinesProvider:
+			serviceConnectionID := os.Getenv(azurePipelinesServiceConnectionIDEnvVarName)
+
+			if serviceConnectionID == "" {
+				return fmt.Errorf("must set %s for azure-pipelines federated token provider",
+					azurePipelinesServiceConnectionIDEnvVarName)
+			}
+
+			if _, err := la.authManager.LoginWithAzurePipelinesFederatedTokenProvider(
+				ctx, la.flags.tenantID, la.flags.clientID, serviceConnectionID,
 			); err != nil {
 				return fmt.Errorf("logging in: %w", err)
 			}
@@ -462,48 +542,47 @@ func (la *loginAction) login(ctx context.Context) error {
 		//
 		// TODO(ellismg): We may want instead to call some explicit `/login` endpoint on the external auth system instead
 		// of abusing the token request in this manner. This would allow the other end to provide a more tailored experience.
-		if _, err := la.verifyLoggedIn(ctx); err != nil {
-			return err
-		}
-	} else {
-		useDevCode, err := parseUseDeviceCode(ctx, la.flags.useDeviceCode, la.commandRunner)
-		if err != nil {
-			return err
-		}
-
-		if useDevCode {
-			_, err := la.authManager.LoginWithDeviceCode(ctx, la.flags.tenantID, la.flags.scopes, func(url string) error {
-				if !la.flags.global.NoPrompt {
-					la.console.Message(ctx, "Then press enter and continue to log in from your browser...")
-					la.console.WaitForEnter()
-					openWithDefaultBrowser(ctx, la.console, url)
-					return nil
-				}
-				// For no-prompt, Just provide instructions without trying to open the browser
-				// If manual browsing is enabled, we don't want to open the browser automatically
-				la.console.Message(ctx, fmt.Sprintf("Then, go to: %s", url))
-				return nil
-			})
-			if err != nil {
-				return fmt.Errorf("logging in: %w", err)
-			}
-		} else {
-			_, err := la.authManager.LoginInteractive(ctx, la.flags.scopes,
-				&auth.LoginInteractiveOptions{
-					TenantID:     la.flags.tenantID,
-					RedirectPort: la.flags.redirectPort,
-					WithOpenUrl: func(url string) error {
-						openWithDefaultBrowser(ctx, la.console, url)
-						return nil
-					},
-				})
-			if err != nil {
-				return fmt.Errorf("logging in: %w", err)
-			}
-		}
+		_, err := la.verifyLoggedIn(ctx)
+		return err
 	}
 
-	return nil
+	useDevCode, err := parseUseDeviceCode(ctx, la.flags.useDeviceCode, la.commandRunner)
+	if err != nil {
+		return err
+	}
+	if useDevCode {
+		_, err = la.authManager.LoginWithDeviceCode(ctx, la.flags.tenantID, la.flags.scopes, func(url string) error {
+			if !la.flags.global.NoPrompt {
+				la.console.Message(ctx, "Then press enter and continue to log in from your browser...")
+				la.console.WaitForEnter()
+				openWithDefaultBrowser(ctx, la.console, url)
+				return nil
+			}
+			// For no-prompt, Just provide instructions without trying to open the browser
+			// If manual browsing is enabled, we don't want to open the browser automatically
+			la.console.Message(ctx, fmt.Sprintf("Then, go to: %s", url))
+			return nil
+		})
+		return err
+	}
+
+	if oneauth.Supported && !la.flags.browser {
+		err = la.authManager.LoginWithOneAuth(ctx, la.flags.tenantID, la.flags.scopes)
+	} else {
+		_, err = la.authManager.LoginInteractive(ctx, la.flags.scopes,
+			&auth.LoginInteractiveOptions{
+				TenantID:     la.flags.tenantID,
+				RedirectPort: la.flags.redirectPort,
+				WithOpenUrl: func(url string) error {
+					openWithDefaultBrowser(ctx, la.console, url)
+					return nil
+				},
+			})
+	}
+	if err != nil {
+		err = fmt.Errorf("logging in: %w", err)
+	}
+	return err
 }
 
 func parseUseDeviceCode(ctx context.Context, flag boolPtr, commandRunner exec.CommandRunner) (bool, error) {
@@ -529,7 +608,7 @@ func parseUseDeviceCode(ctx context.Context, flag boolPtr, commandRunner exec.Co
 		useDevCode = runningOnCodespacesBrowser(ctx, commandRunner)
 	}
 
-	if auth.ShouldUseCloudShellAuth() {
+	if runcontext.IsRunningInCloudShell() {
 		// Following az CLI behavior in Cloud Shell, use device code authentication when the user is trying to
 		// authenticate. The normal interactive authentication flow will not work in Cloud Shell because the browser
 		// cannot be opened or (if it could) cannot be redirected back to a port on the Cloud Shell instance.

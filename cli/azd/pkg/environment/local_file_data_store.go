@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package environment
 
 import (
@@ -6,6 +9,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/internal/tracing"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
@@ -14,7 +19,6 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	"golang.org/x/exp/slices"
 )
 
 // LocalFileDataStore is a DataStore implementation that stores environment data in the local file system.
@@ -71,8 +75,8 @@ func (fs *LocalFileDataStore) List(ctx context.Context) ([]*contracts.EnvListEnv
 		}
 	}
 
-	slices.SortFunc(envs, func(a, b *contracts.EnvListEnvironment) bool {
-		return a.Name < b.Name
+	slices.SortFunc(envs, func(a, b *contracts.EnvListEnvironment) int {
+		return strings.Compare(a.Name, b.Name)
 	})
 
 	return envs, nil
@@ -81,8 +85,11 @@ func (fs *LocalFileDataStore) List(ctx context.Context) ([]*contracts.EnvListEnv
 // Get returns the environment instance for the specified environment name
 func (fs *LocalFileDataStore) Get(ctx context.Context, name string) (*Environment, error) {
 	root := fs.azdContext.EnvironmentRoot(name)
-	if _, err := os.Stat(root); err != nil {
-		return nil, fmt.Errorf("'%s' %w, %w", name, ErrNotFound, err)
+	_, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("'%s': %w", name, ErrNotFound)
+	} else if err != nil {
+		return nil, fmt.Errorf("listing env root: %w", err)
 	}
 
 	env := New(name)
@@ -129,7 +136,7 @@ func (fs *LocalFileDataStore) Reload(ctx context.Context, env *Environment) erro
 }
 
 // Save saves the environment to the persistent data store
-func (fs *LocalFileDataStore) Save(ctx context.Context, env *Environment) error {
+func (fs *LocalFileDataStore) Save(ctx context.Context, env *Environment, options *SaveOptions) error {
 	// Update configuration
 	if err := fs.configManager.Save(env.Config, fs.ConfigPath(env)); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -173,5 +180,21 @@ func (fs *LocalFileDataStore) Save(ctx context.Context, env *Environment) error 
 	}
 
 	tracing.SetUsageAttributes(fields.StringHashed(fields.EnvNameKey, env.Name()))
+	return nil
+}
+
+func (fs *LocalFileDataStore) Delete(ctx context.Context, name string) error {
+	envRoot := fs.azdContext.EnvironmentRoot(name)
+	_, err := os.Stat(envRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("'%s': %w", name, ErrNotFound)
+	} else if err != nil {
+		return fmt.Errorf("listing env root: %w", err)
+	}
+
+	if err := os.RemoveAll(envRoot); err != nil {
+		return fmt.Errorf("removing env root: %w", err)
+	}
+
 	return nil
 }

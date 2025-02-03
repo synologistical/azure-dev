@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package templates
 
 import (
@@ -14,8 +17,12 @@ type Template struct {
 	// Name is the friendly short name of the template.
 	Name string `json:"name"`
 
+	Title string `json:"title,omitempty"`
+
 	// The source of the template
-	Source string `json:"source,omitempty"`
+	Source string `json:"-"`
+
+	RepoSource string `json:"source,omitempty"`
 
 	// Description is a long description of the template.
 	Description string `json:"description,omitempty"`
@@ -24,6 +31,9 @@ type Template struct {
 	// "{owner}/{repo}" for GitHub repositories,
 	// or "{repo}" for GitHub repositories under Azure-Samples (default organization).
 	RepositoryPath string `json:"repositoryPath"`
+
+	// A list of tags associated with the template
+	Tags []string `json:"tags"`
 
 	// Additional metadata about the template
 	Metadata Metadata `json:"metadata,omitempty"`
@@ -51,6 +61,7 @@ func (t *Template) Display(writer io.Writer) error {
 		{"Name", ":", t.Name},
 		{"Source", ":", t.Source},
 		{"Description", ":", t.Description},
+		{"Tags", ":", strings.Join(t.Tags, ", ")},
 	}
 
 	for _, line := range text {

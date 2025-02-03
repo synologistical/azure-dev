@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package appdetect
 
 import (
@@ -12,7 +15,7 @@ import (
 )
 
 type dotNetDetector struct {
-	dotnetCli dotnet.DotNetCli
+	dotnetCli *dotnet.Cli
 }
 
 func (dd *dotNetDetector) Language() Language {

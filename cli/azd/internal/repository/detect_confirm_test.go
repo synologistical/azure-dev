@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package repository
 
 import (
@@ -40,6 +43,23 @@ func Test_detectConfirm_confirm(t *testing.T) {
 		interactions []string
 		want         []appdetect.Project
 	}{
+		{
+			name:      "add from empty",
+			detection: []appdetect.Project{},
+			interactions: []string{
+				"y",
+				fmt.Sprintf("%s\t%s", appdetect.Java.Display(), "[Language]"),
+				"java-dir",
+				"Confirm and continue initializing my app",
+			},
+			want: []appdetect.Project{
+				{
+					Language:      appdetect.Java,
+					Path:          javaDir,
+					DetectionRule: string(EntryKindManual),
+				},
+			},
+		},
 		{
 			name: "confirm single",
 			detection: []appdetect.Project{
@@ -194,12 +214,13 @@ func Test_detectConfirm_confirm(t *testing.T) {
 				console: input.NewConsole(
 					false,
 					false,
-					os.Stdout,
+					input.Writers{Output: os.Stdout},
 					input.ConsoleHandles{
 						Stderr: os.Stderr,
 						Stdin:  strings.NewReader(strings.Join(tt.interactions, "\n") + "\n"),
 						Stdout: os.Stdout,
 					},
+					nil,
 					nil),
 			}
 			d.Init(tt.detection, dir)

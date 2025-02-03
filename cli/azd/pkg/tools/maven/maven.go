@@ -1,6 +1,10 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package maven
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	osexec "os/exec"
@@ -16,15 +21,9 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
 )
 
-type MavenCli interface {
-	tools.ExternalTool
-	SetPath(projectPath string, rootProjectPath string)
-	ResolveDependencies(ctx context.Context, projectPath string) error
-	Compile(ctx context.Context, projectPath string) error
-	Package(ctx context.Context, projectPath string) error
-}
+var _ tools.ExternalTool = (*Cli)(nil)
 
-type mavenCli struct {
+type Cli struct {
 	commandRunner   exec.CommandRunner
 	projectPath     string
 	rootProjectPath string
@@ -35,15 +34,15 @@ type mavenCli struct {
 	mvnCmdErr  error
 }
 
-func (m *mavenCli) Name() string {
+func (m *Cli) Name() string {
 	return "Maven"
 }
 
-func (m *mavenCli) InstallUrl() string {
+func (m *Cli) InstallUrl() string {
 	return "https://maven.apache.org"
 }
 
-func (m *mavenCli) CheckInstalled(ctx context.Context) error {
+func (m *Cli) CheckInstalled(ctx context.Context) error {
 	_, err := m.mvnCmd()
 	if err != nil {
 		return err
@@ -56,12 +55,12 @@ func (m *mavenCli) CheckInstalled(ctx context.Context) error {
 	return nil
 }
 
-func (m *mavenCli) SetPath(projectPath string, rootProjectPath string) {
+func (m *Cli) SetPath(projectPath string, rootProjectPath string) {
 	m.projectPath = projectPath
 	m.rootProjectPath = rootProjectPath
 }
 
-func (m *mavenCli) mvnCmd() (string, error) {
+func (m *Cli) mvnCmd() (string, error) {
 	m.mvnCmdOnce.Do(func() {
 		mvnCmd, err := getMavenPath(m.projectPath, m.rootProjectPath)
 		if err != nil {
@@ -130,7 +129,7 @@ func getMavenWrapperPath(projectPath string, rootProjectPath string) (string, er
 			return mvnw, nil
 		}
 
-		if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, osexec.ErrNotFound) {
 			return "", err
 		}
 
@@ -143,7 +142,7 @@ func getMavenWrapperPath(projectPath string, rootProjectPath string) (string, er
 	}
 }
 
-// cMavenVersionRegexp captures the version number of maven from the output of "mvn --version"
+// mavenVersionRegexp captures the version number of maven from the output of "mvn --version"
 //
 // the output of mvn --version looks something like this:
 // Apache Maven 3.9.1 (2e178502fcdbffc201671fb2537d0cb4b4cc58f8)
@@ -151,9 +150,9 @@ func getMavenWrapperPath(projectPath string, rootProjectPath string) (string, er
 // Java version: 17.0.6, vendor: Microsoft, runtime: C:\Program Files\Microsoft\jdk-17.0.6.10-hotspot
 // Default locale: en_US, platform encoding: Cp1252
 // OS name: "windows 11", version: "10.0", arch: "amd64", family: "windows"
-var cMavenVersionRegexp = regexp.MustCompile(`Apache Maven (.*) \(`)
+var mavenVersionRegexp = regexp.MustCompile(`Apache Maven (.*) \(`)
 
-func (cli *mavenCli) extractVersion(ctx context.Context) (string, error) {
+func (cli *Cli) extractVersion(ctx context.Context) (string, error) {
 	mvnCmd, err := cli.mvnCmd()
 	if err != nil {
 		return "", err
@@ -165,7 +164,7 @@ func (cli *mavenCli) extractVersion(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to run %s --version: %w", mvnCmd, err)
 	}
 
-	parts := cMavenVersionRegexp.FindStringSubmatch(res.Stdout)
+	parts := mavenVersionRegexp.FindStringSubmatch(res.Stdout)
 	if len(parts) != 2 {
 		return "", fmt.Errorf("could not parse %s --version output, did not match expected format", mvnCmd)
 	}
@@ -173,7 +172,7 @@ func (cli *mavenCli) extractVersion(ctx context.Context) (string, error) {
 	return parts[1], nil
 }
 
-func (cli *mavenCli) Compile(ctx context.Context, projectPath string) error {
+func (cli *Cli) Compile(ctx context.Context, projectPath string) error {
 	mvnCmd, err := cli.mvnCmd()
 	if err != nil {
 		return err
@@ -188,7 +187,7 @@ func (cli *mavenCli) Compile(ctx context.Context, projectPath string) error {
 	return nil
 }
 
-func (cli *mavenCli) Package(ctx context.Context, projectPath string) error {
+func (cli *Cli) Package(ctx context.Context, projectPath string) error {
 	mvnCmd, err := cli.mvnCmd()
 	if err != nil {
 		return err
@@ -204,7 +203,7 @@ func (cli *mavenCli) Package(ctx context.Context, projectPath string) error {
 	return nil
 }
 
-func (cli *mavenCli) ResolveDependencies(ctx context.Context, projectPath string) error {
+func (cli *Cli) ResolveDependencies(ctx context.Context, projectPath string) error {
 	mvnCmd, err := cli.mvnCmd()
 	if err != nil {
 		return err
@@ -218,8 +217,77 @@ func (cli *mavenCli) ResolveDependencies(ctx context.Context, projectPath string
 	return nil
 }
 
-func NewMavenCli(commandRunner exec.CommandRunner) MavenCli {
-	return &mavenCli{
+var ErrPropertyNotFound = errors.New("property not found")
+
+func (cli *Cli) GetProperty(ctx context.Context, propertyPath string, projectPath string) (string, error) {
+	mvnCmd, err := cli.mvnCmd()
+	if err != nil {
+		return "", err
+	}
+	runArgs := exec.NewRunArgs(mvnCmd,
+		"help:evaluate",
+		// cspell: disable-next-line Dexpression and DforceStdout are maven command line arguments
+		"-Dexpression="+propertyPath, "-q", "-DforceStdout").WithCwd(projectPath)
+	res, err := cli.commandRunner.Run(ctx, runArgs)
+	if err != nil {
+		return "", fmt.Errorf("mvn help:evaluate on project '%s' failed: %w", projectPath, err)
+	}
+
+	result := strings.TrimSpace(res.Stdout)
+	if result == "null object or invalid expression" {
+		return "", ErrPropertyNotFound
+	}
+
+	return result, nil
+}
+
+func (cli *Cli) EffectivePom(ctx context.Context, pomPath string) (string, error) {
+	mvnCmd, err := cli.mvnCmd()
+	if err != nil {
+		return "", err
+	}
+	pomDir := filepath.Dir(pomPath)
+	runArgs := exec.NewRunArgs(mvnCmd, "help:effective-pom", "-f", pomPath).WithCwd(pomDir)
+	result, err := cli.commandRunner.Run(ctx, runArgs)
+	if err != nil {
+		return "", fmt.Errorf("mvn help:effective-pom on project '%s' failed: %w", pomPath, err)
+	}
+	return getEffectivePomFromConsoleOutput(result.Stdout)
+}
+
+var projectStart = regexp.MustCompile(`^\s*<project `) // the space can not be deleted.
+var projectEnd = regexp.MustCompile(`^\s*</project>\s*$`)
+
+func getEffectivePomFromConsoleOutput(consoleOutput string) (string, error) {
+	var builder strings.Builder
+	scanner := bufio.NewScanner(strings.NewReader(consoleOutput))
+	inProject := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if projectStart.MatchString(line) {
+			inProject = true
+			builder.Reset() // for a pom which contains submodule, the effective pom for root pom appears at last.
+		} else if projectEnd.MatchString(line) {
+			builder.WriteString(line)
+			inProject = false
+		}
+		if inProject {
+			builder.WriteString(line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("failed to scan console output: %w", err)
+	}
+	result := builder.String()
+	if result == "" {
+		return "", fmt.Errorf("failed to get effective pom from console: empty content")
+	}
+	return result, nil
+}
+
+func NewCli(commandRunner exec.CommandRunner) *Cli {
+	return &Cli{
 		commandRunner: commandRunner,
 	}
 }

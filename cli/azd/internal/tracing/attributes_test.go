@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package tracing
 
 import (
@@ -74,6 +77,78 @@ func TestAppendAttribute(t *testing.T) {
 			set(val, tt.existing)
 
 			appendTo(val, tt.set)
+
+			attributes := get(val)
+
+			assert.ElementsMatch(t, attributes, tt.expected)
+		})
+	}
+}
+
+func TestAppendAttributeUnique(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []attribute.KeyValue
+		set      attribute.KeyValue
+		expected []attribute.KeyValue
+	}{
+		{"SetString",
+			[]attribute.KeyValue{},
+			attribute.String("k", "v"),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v"})}},
+		{"SetSlice",
+			[]attribute.KeyValue{},
+			attribute.StringSlice("k", []string{"v"}),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v"})}},
+
+		{"ReplaceStringWhenUnmatched",
+			[]attribute.KeyValue{attribute.BoolSlice("k", []bool{true})},
+			attribute.String("k", "v"),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v"})}},
+
+		{"ReplaceStringSliceWhenUnmatched",
+			[]attribute.KeyValue{attribute.BoolSlice("k", []bool{true})},
+			attribute.StringSlice("k", []string{"v"}),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v"})}},
+
+		{"AppendStringSlice",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1"})},
+			attribute.StringSlice("k", []string{"v2"}),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})}},
+
+		{"MergeStringSlice",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})},
+			attribute.StringSlice("k", []string{"v2", "v3"}),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2", "v3"})}},
+
+		{"ExistingStringSlice",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})},
+			attribute.StringSlice("k", []string{"v2"}),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})}},
+
+		{"AppendString",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1"})},
+			attribute.String("k", "v2"),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})}},
+
+		{"MergeString",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})},
+			attribute.String("k", "v3"),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2", "v3"})}},
+
+		{"ExistingString",
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})},
+			attribute.String("k", "v2"),
+			[]attribute.KeyValue{attribute.StringSlice("k", []string{"v1", "v2"})}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			val := &valSynced{}
+			val.val.Store(baggage.NewBaggage())
+
+			set(val, tt.existing)
+
+			appendToUnique(val, tt.set)
 
 			attributes := get(val)
 

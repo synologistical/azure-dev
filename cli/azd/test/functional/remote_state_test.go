@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cli_test
 
 import (
@@ -8,8 +11,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/azure/azure-dev/cli/azd/pkg/auth"
 	"github.com/azure/azure-dev/cli/azd/pkg/azsdk/storage"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/config"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/test/azdcli"
@@ -68,19 +73,23 @@ func createBlobClient(
 	storageConfig *storage.AccountConfig,
 	httpClient auth.HttpClient,
 ) storage.BlobClient {
+	coreClientOptions := &azcore.ClientOptions{
+		Transport: httpClient,
+	}
+
 	fileConfigManager := config.NewFileConfigManager(config.NewManager())
 
 	authManager, err := auth.NewManager(
 		fileConfigManager,
 		config.NewUserConfigManager(fileConfigManager),
+		cloud.AzurePublic(),
 		httpClient, mockContext.Console,
+		auth.ExternalAuthConfiguration{},
 	)
 	require.NoError(t, err)
 
-	credentials, err := authManager.CredentialForCurrentUser(*mockContext.Context, nil)
-	require.NoError(t, err)
-
-	sdkClient, err := storage.NewBlobSdkClient(*mockContext.Context, credentials, storageConfig, httpClient, "azd")
+	sdkClient, err := storage.NewBlobSdkClient(
+		auth.NewMultiTenantCredentialProvider(authManager), storageConfig, coreClientOptions, cloud.AzurePublic())
 	require.NoError(t, err)
 	require.NotNil(t, sdkClient)
 
@@ -97,6 +106,7 @@ func runTestWithRemoteState(t *testing.T, testFunc remoteStateTestFunc) {
 	envName := randomOrStoredEnvName(session)
 
 	cli, env := provisionRemoteStateStorage(t, ctx, envName, session)
+	defer cleanupDeployments(ctx, t, cli, session, envName)
 	defer destroyRemoteStateStorage(t, ctx, cli)
 
 	accountConfig := &storage.AccountConfig{

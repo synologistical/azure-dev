@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package resources
 
 import (
@@ -24,3 +27,9 @@ var ScaffoldTemplates embed.FS
 
 //go:embed apphost/templates/*
 var AppHostTemplates embed.FS
+
+//go:embed ai-python/*
+var AiPythonApp embed.FS
+
+//go:embed pipeline/*
+var PipelineFiles embed.FS

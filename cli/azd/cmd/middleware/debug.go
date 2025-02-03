@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package middleware
 
 import (
@@ -30,7 +33,7 @@ func NewDebugMiddleware(options *Options, console input.Console) Middleware {
 // a debugger before continuing invocation of the action
 func (m *DebugMiddleware) Run(ctx context.Context, next NextFn) (*actions.ActionResult, error) {
 	// Don't run for sub actions
-	if m.options.IsChildAction() {
+	if m.options.IsChildAction(ctx) {
 		return next(ctx)
 	}
 

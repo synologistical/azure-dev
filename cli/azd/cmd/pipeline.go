@@ -26,7 +26,7 @@ import (
 type pipelineConfigFlags struct {
 	pipeline.PipelineManagerArgs
 	global *internal.GlobalCommandOptions
-	envFlag
+	internal.EnvFlag
 }
 
 func (pc *pipelineConfigFlags) Bind(local *pflag.FlagSet, global *internal.GlobalCommandOptions) {
@@ -66,7 +66,13 @@ func (pc *pipelineConfigFlags) Bind(local *pflag.FlagSet, global *internal.Globa
 	// there no customer input using --provider
 	local.StringVar(&pc.PipelineProvider, "provider", "",
 		"The pipeline provider to use (github for Github Actions and azdo for Azure Pipelines).")
-	pc.envFlag.Bind(local, global)
+	local.StringVarP(&pc.ServiceManagementReference, "applicationServiceManagementReference", "m", "",
+		"Service Management Reference. "+
+			"References application or service contact information from a Service or Asset Management database. "+
+			"This value must be a Universally Unique Identifier (UUID). "+
+			"You can set this value globally by running "+
+			"azd config set pipeline.config.applicationServiceManagementReference <UUID>.")
+	pc.EnvFlag.Bind(local, global)
 	pc.global = global
 }
 
@@ -171,7 +177,7 @@ func (p *pipelineConfigAction) Run(ctx context.Context) (*actions.ActionResult, 
 		Title: fmt.Sprintf("Configure your %s pipeline", pipelineProviderName),
 	})
 
-	pipelineResult, err := p.manager.Configure(ctx)
+	pipelineResult, err := p.manager.Configure(ctx, p.projectConfig.Name)
 	if err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/azure/azure-dev/cli/azd/internal/tracing"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
 	"github.com/azure/azure-dev/cli/azd/pkg/config"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
@@ -22,6 +23,7 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/osutil"
 	"github.com/azure/azure-dev/cli/azd/pkg/project"
 	"github.com/azure/azure-dev/cli/azd/test/azdcli"
+	"github.com/azure/azure-dev/cli/azd/test/mocks"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
@@ -251,10 +253,15 @@ func Test_CLI_Telemetry_NestedCommands(t *testing.T) {
 
 	// Remove infra folder to avoid lengthy Azure operations while asserting the intended telemetry behavior.
 	// The current behavior is that `azd provision` will fail when trying to read the nonexistent bicep folder.
-	require.NoError(t, os.RemoveAll(filepath.Join(dir, "infra")))
+	infraPath := filepath.Join(dir, "infra")
+	require.NoError(t, os.RemoveAll(infraPath))
 
-	// We do require that infra folder exist, however, so put it back (empty).
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "infra"), osutil.PermissionDirectoryOwnerOnly))
+	// We do require that infra folder exist, however, so put it back with a module which will throw during provisioning.
+	require.NoError(t, os.MkdirAll(infraPath, osutil.PermissionDirectoryOwnerOnly))
+	// main.something will allow azd to continue until trying to find and build bicep.
+	file, err := os.Create(filepath.Join(infraPath, "main.something"))
+	require.NoError(t, err)
+	defer file.Close()
 
 	_, err = cli.RunCommandWithStdIn(ctx, stdinForProvision(), "up", "--trace-log-file", traceFilePath)
 	require.Error(t, err)
@@ -299,7 +306,8 @@ func Test_CLI_Telemetry_NestedCommands(t *testing.T) {
 			require.Contains(t, m, fields.CmdEntry)
 			require.Equal(t, "cmd.up", m[fields.CmdEntry])
 
-			require.NotContains(t, m, fields.CmdFlags)
+			require.Contains(t, m, fields.CmdFlags)
+			require.ElementsMatch(t, []string{"all", "trace-log-file"}, m[fields.CmdFlags])
 		} else if !provisionCmdFound {
 			require.Equal(t, "cmd.provision", span.Name)
 			provisionCmdFound = true
@@ -315,7 +323,8 @@ func Test_CLI_Telemetry_NestedCommands(t *testing.T) {
 			require.Contains(t, m, fields.CmdEntry)
 			require.Equal(t, "cmd.up", m[fields.CmdEntry])
 
-			require.NotContains(t, m, fields.CmdFlags)
+			require.Contains(t, m, fields.CmdFlags)
+			require.ElementsMatch(t, []string{"trace-log-file"}, m[fields.CmdFlags])
 		} else if !upCmdFound {
 			require.Equal(t, "cmd.up", span.Name)
 			upCmdFound = true
@@ -341,6 +350,39 @@ func Test_CLI_Telemetry_NestedCommands(t *testing.T) {
 	require.True(t, packageCmdFound, "cmd.package not found")
 	require.True(t, provisionCmdFound, "cmd.provision not found")
 	require.True(t, upCmdFound, "cmd.up not found")
+}
+
+func Test_Telemetry_AlphaFeatures_Enabled(t *testing.T) {
+	mockContext := mocks.NewMockContext(context.Background())
+
+	t.Setenv("AZD_ALPHA_ENABLE_INFRASYNTH", "true")
+	t.Setenv("AZD_ALPHA_ENABLE_AKS_HELM", "false")
+
+	infraSyncEnabled := mockContext.AlphaFeaturesManager.IsEnabled("infraSynth")
+	require.True(t, infraSyncEnabled)
+
+	helmEnabled := mockContext.AlphaFeaturesManager.IsEnabled("aks.helm")
+	require.False(t, helmEnabled)
+
+	usageAttributes := tracing.GetUsageAttributes()
+
+	found := false
+	var alphaFeaturesAttribute attribute.KeyValue
+
+	for _, attrib := range usageAttributes {
+		if attrib.Key == fields.AlphaFeaturesKey {
+			found = true
+			alphaFeaturesAttribute = attrib
+			break
+		}
+	}
+
+	require.True(t, found)
+	values := alphaFeaturesAttribute.Value.AsStringSlice()
+
+	require.Len(t, values, 1)
+	require.Contains(t, values, "infraSynth")
+	require.NotContains(t, values, "aks.helm")
 }
 
 func attributesMap(attributes []Attribute) map[attribute.Key]interface{} {
@@ -382,6 +424,8 @@ func verifyResource(
 	require.Equal(t, m[fields.ServiceNameKey], fields.ServiceNameAzd)
 
 	require.Contains(t, m, fields.ExecutionEnvironmentKey)
+
+	require.Contains(t, m, fields.DevDeviceIdKey)
 
 	env := ""
 	if os.Getenv("BUILD_BUILDID") != "" {

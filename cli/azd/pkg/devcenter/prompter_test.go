@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
@@ -6,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resourcegraph/armresourcegraph"
-	"github.com/azure/azure-dev/cli/azd/pkg/azsdk"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
@@ -32,7 +35,7 @@ func Test_Prompt_Project(t *testing.T) {
 			return selectedProjectIndex, nil
 		})
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedProject, err := prompter.PromptProject(*mockContext.Context, selectedDevCenter.Name)
 		require.NoError(t, err)
 		require.NotNil(t, selectedProject)
@@ -47,7 +50,7 @@ func Test_Prompt_Project(t *testing.T) {
 			On("WritableProjects", *mockContext.Context).
 			Return([]*devcentersdk.Project{}, nil)
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedProject, err := prompter.PromptProject(*mockContext.Context, "")
 		require.Error(t, err)
 		require.ErrorContains(t, err, "no dev center projects found")
@@ -77,7 +80,7 @@ func Test_Prompt_EnvironmentType(t *testing.T) {
 			return selectedIndex, nil
 		})
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedEnvironmentType, err := prompter.PromptEnvironmentType(
 			*mockContext.Context,
 			selectedDevCenter.Name,
@@ -109,7 +112,7 @@ func Test_Prompt_EnvironmentType(t *testing.T) {
 			return selectedIndex, nil
 		})
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedEnvironmentType, err := prompter.PromptEnvironmentType(
 			*mockContext.Context,
 			selectedDevCenter.Name,
@@ -143,7 +146,7 @@ func Test_Prompt_EnvironmentDefinitions(t *testing.T) {
 			return selectedIndex, nil
 		})
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedEnvironmentType, err := prompter.PromptEnvironmentDefinition(
 			*mockContext.Context,
 			selectedDevCenter.Name,
@@ -171,7 +174,7 @@ func Test_Prompt_EnvironmentDefinitions(t *testing.T) {
 			On("WritableProjects", *mockContext.Context).
 			Return(mockProjects, nil)
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
+		prompter := newPrompterForTest(t, mockContext, manager)
 		selectedEnvironmentType, err := prompter.PromptEnvironmentDefinition(
 			*mockContext.Context,
 			selectedDevCenter.Name,
@@ -197,8 +200,8 @@ func Test_Prompt_Config(t *testing.T) {
 			Catalog:               selectedEnvDefinition.CatalogName,
 		}
 
-		prompter := newPrompterForTest(t, mockContext, config, nil)
-		config, err := prompter.PromptForConfig(*mockContext.Context)
+		prompter := newPrompterForTest(t, mockContext, nil)
+		err := prompter.PromptForConfig(*mockContext.Context, config)
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		require.Equal(t, selectedDevCenter.Name, config.Name)
@@ -233,8 +236,10 @@ func Test_Prompt_Config(t *testing.T) {
 			return 2, nil
 		})
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, manager)
-		config, err := prompter.PromptForConfig(*mockContext.Context)
+		config := &Config{}
+
+		prompter := newPrompterForTest(t, mockContext, manager)
+		err := prompter.PromptForConfig(*mockContext.Context, config)
 		require.NoError(t, err)
 		require.NotNil(t, config)
 		require.Equal(t, selectedDevCenter.Name, config.Name)
@@ -326,7 +331,7 @@ func Test_Prompt_Parameters(t *testing.T) {
 			},
 		}
 
-		prompter := newPrompterForTest(t, mockContext, &Config{}, nil)
+		prompter := newPrompterForTest(t, mockContext, nil)
 		values, err := prompter.PromptParameters(*mockContext.Context, env, envDefinition)
 		require.NoError(t, err)
 
@@ -337,7 +342,7 @@ func Test_Prompt_Parameters(t *testing.T) {
 
 	t.Run("WithSomeSetValues", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
-		prompter := newPrompterForTest(t, mockContext, &Config{}, nil)
+		prompter := newPrompterForTest(t, mockContext, nil)
 		promptCalled := false
 
 		// Only mock response for param 3
@@ -382,7 +387,7 @@ func Test_Prompt_Parameters(t *testing.T) {
 
 	t.Run("WithAllSetValues", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
-		prompter := newPrompterForTest(t, mockContext, &Config{}, nil)
+		prompter := newPrompterForTest(t, mockContext, nil)
 
 		env := environment.New("Test")
 		envDefinition := &devcentersdk.EnvironmentDefinition{
@@ -410,25 +415,18 @@ func Test_Prompt_Parameters(t *testing.T) {
 	})
 }
 
-func newPrompterForTest(t *testing.T, mockContext *mocks.MockContext, config *Config, manager Manager) *Prompter {
-	coreOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildCoreClientOptions()
-
-	armOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildArmClientOptions()
-
-	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, armOptions)
+func newPrompterForTest(t *testing.T, mockContext *mocks.MockContext, manager Manager) *Prompter {
+	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, mockContext.ArmClientOptions)
 	require.NoError(t, err)
 
 	devCenterClient, err := devcentersdk.NewDevCenterClient(
 		mockContext.Credentials,
-		coreOptions,
+		mockContext.CoreClientOptions,
 		resourceGraphClient,
+		cloud.AzurePublic(),
 	)
 
 	require.NoError(t, err)
 
-	return NewPrompter(config, mockContext.Console, manager, devCenterClient)
+	return NewPrompter(mockContext.Console, manager, devCenterClient)
 }

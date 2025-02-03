@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package bicep
 
 import (
@@ -6,15 +9,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/azure/azure-dev/cli/azd/pkg/account"
 	"github.com/azure/azure-dev/cli/azd/pkg/azure"
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/prompt"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 	"github.com/azure/azure-dev/cli/azd/test/mocks/mockaccount"
-	"github.com/azure/azure-dev/cli/azd/test/mocks/mockazcli"
 	"github.com/stretchr/testify/require"
 )
 
@@ -86,7 +89,7 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "minValue",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:     "int",
-				MinValue: convert.RefOf(1),
+				MinValue: to.Ptr(1),
 			},
 			provided: []string{"0", "1"},
 			expected: 1,
@@ -96,7 +99,7 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "maxValue",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:     "int",
-				MaxValue: convert.RefOf(10),
+				MaxValue: to.Ptr(10),
 			},
 			provided: []string{"11", "10"},
 			expected: 10,
@@ -106,8 +109,8 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "rangeValue",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:     "int",
-				MinValue: convert.RefOf(1),
-				MaxValue: convert.RefOf(10),
+				MinValue: to.Ptr(1),
+				MaxValue: to.Ptr(10),
 			},
 			provided: []string{"0", "11", "5"},
 			expected: 5,
@@ -117,7 +120,7 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "minLength",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:      "string",
-				MinLength: convert.RefOf(1),
+				MinLength: to.Ptr(1),
 			},
 			provided: []string{"", "ok"},
 			expected: "ok",
@@ -127,7 +130,7 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "maxLength",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:      "string",
-				MaxLength: convert.RefOf(10),
+				MaxLength: to.Ptr(10),
 			},
 			provided: []string{"this is a very long string and will be rejected", "ok"},
 			expected: "ok",
@@ -137,8 +140,8 @@ func TestPromptForParameterValidation(t *testing.T) {
 			name: "rangeLength",
 			param: azure.ArmTemplateParameterDefinition{
 				Type:      "string",
-				MinLength: convert.RefOf(1),
-				MaxLength: convert.RefOf(10),
+				MinLength: to.Ptr(1),
+				MaxLength: to.Ptr(10),
 			},
 			provided: []string{"this is a very long string and will be rejected", "", "ok"},
 			expected: "ok",
@@ -223,7 +226,7 @@ func TestPromptForParameterAllowedValues(t *testing.T) {
 
 	value, err := p.promptForParameter(*mockContext.Context, "testParam", azure.ArmTemplateParameterDefinition{
 		Type:          "string",
-		AllowedValues: convert.RefOf([]any{"three", "good", "choices"}),
+		AllowedValues: to.Ptr([]any{"three", "good", "choices"}),
 	})
 
 	require.NoError(t, err)
@@ -231,7 +234,7 @@ func TestPromptForParameterAllowedValues(t *testing.T) {
 
 	value, err = p.promptForParameter(*mockContext.Context, "testParam", azure.ArmTemplateParameterDefinition{
 		Type:          "int",
-		AllowedValues: convert.RefOf([]any{10, 20, 30}),
+		AllowedValues: to.Ptr([]any{10, 20, 30}),
 	})
 
 	require.NoError(t, err)
@@ -245,7 +248,6 @@ func TestPromptForParametersLocation(t *testing.T) {
 	prepareBicepMocks(mockContext)
 
 	env := environment.New("test")
-	azCli := mockazcli.NewAzCliFromMockContext(mockContext)
 	accountManager := &mockaccount.MockAccountManager{
 		Subscriptions: []account.Subscription{
 			{
@@ -273,7 +275,13 @@ func TestPromptForParametersLocation(t *testing.T) {
 	}
 
 	p := createBicepProvider(t, mockContext)
-	p.prompters = prompt.NewDefaultPrompter(env, mockContext.Console, accountManager, azCli)
+	p.prompters = prompt.NewDefaultPrompter(
+		env,
+		mockContext.Console,
+		accountManager,
+		p.resourceService,
+		cloud.AzurePublic(),
+	)
 
 	mockContext.Console.WhenSelect(func(options input.ConsoleOptions) bool {
 		return strings.Contains(options.Message, "'unfilteredLocation")

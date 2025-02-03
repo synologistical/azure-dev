@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package middleware
 
 import (
@@ -6,18 +9,14 @@ import (
 	"log"
 
 	"github.com/azure/azure-dev/cli/azd/cmd/actions"
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/ext"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
+	"github.com/azure/azure-dev/cli/azd/pkg/ioc"
 	"github.com/azure/azure-dev/cli/azd/pkg/lazy"
 	"github.com/azure/azure-dev/cli/azd/pkg/project"
 )
-
-type contextKey string
-
-var serviceHooksRegisteredContextKey contextKey = "service-hooks-registered"
 
 type HooksMiddleware struct {
 	lazyEnvManager    *lazy.Lazy[environment.Manager]
@@ -27,6 +26,7 @@ type HooksMiddleware struct {
 	commandRunner     exec.CommandRunner
 	console           input.Console
 	options           *Options
+	serviceLocator    ioc.ServiceLocator
 }
 
 // Creates a new instance of the Hooks middleware
@@ -38,6 +38,7 @@ func NewHooksMiddleware(
 	commandRunner exec.CommandRunner,
 	console input.Console,
 	options *Options,
+	serviceLocator ioc.ServiceLocator,
 ) Middleware {
 	return &HooksMiddleware{
 		lazyEnvManager:    lazyEnvManager,
@@ -47,13 +48,12 @@ func NewHooksMiddleware(
 		commandRunner:     commandRunner,
 		console:           console,
 		options:           options,
+		serviceLocator:    serviceLocator,
 	}
 }
 
 // Runs the Hooks middleware
 func (m *HooksMiddleware) Run(ctx context.Context, next NextFn) (*actions.ActionResult, error) {
-	ctx, _ = getServiceHooksRegistered(ctx)
-
 	env, err := m.lazyEnv.GetValue()
 	if err != nil {
 		log.Println("azd environment is not available, skipping all hook registrations.")
@@ -81,7 +81,7 @@ func (m *HooksMiddleware) registerCommandHooks(
 	projectConfig *project.ProjectConfig,
 	next NextFn,
 ) (*actions.ActionResult, error) {
-	if projectConfig.Hooks == nil || len(projectConfig.Hooks) == 0 {
+	if len(projectConfig.Hooks) == 0 {
 		log.Println(
 			"azd project is not available or does not contain any command hooks, skipping command hook registrations.",
 		)
@@ -102,6 +102,7 @@ func (m *HooksMiddleware) registerCommandHooks(
 		projectConfig.Path,
 		projectConfig.Hooks,
 		env,
+		m.serviceLocator,
 	)
 
 	var actionResult *actions.ActionResult
@@ -133,12 +134,6 @@ func (m *HooksMiddleware) registerServiceHooks(
 	env *environment.Environment,
 	projectConfig *project.ProjectConfig,
 ) error {
-	// Check if service hooks have already been registered higher up the chain
-	ctx, serviceHooksRegistered := getServiceHooksRegistered(ctx)
-	if *serviceHooksRegistered {
-		return nil
-	}
-
 	envManager, err := m.lazyEnvManager.GetValue()
 	if err != nil {
 		return fmt.Errorf("failed getting environment manager, %w", err)
@@ -152,7 +147,7 @@ func (m *HooksMiddleware) registerServiceHooks(
 	for _, service := range stableServices {
 		serviceName := service.Name
 		// If the service hasn't configured any hooks we can continue on.
-		if service.Hooks == nil || len(service.Hooks) == 0 {
+		if len(service.Hooks) == 0 {
 			log.Printf("service '%s' does not require any command hooks.\n", serviceName)
 			continue
 		}
@@ -166,6 +161,7 @@ func (m *HooksMiddleware) registerServiceHooks(
 			service.Path(),
 			service.Hooks,
 			env,
+			m.serviceLocator,
 		)
 
 		for hookName := range service.Hooks {
@@ -177,7 +173,7 @@ func (m *HooksMiddleware) registerServiceHooks(
 
 			if err := service.AddHandler(
 				ext.Event(hookName),
-				m.createServiceEventHandler(ctx, hookType, eventName, serviceHooksRunner),
+				m.createServiceEventHandler(hookType, eventName, serviceHooksRunner),
 			); err != nil {
 				return fmt.Errorf(
 					"failed registering event handler for service '%s' and event '%s', %w",
@@ -189,15 +185,11 @@ func (m *HooksMiddleware) registerServiceHooks(
 		}
 	}
 
-	// Set context value that the service hooks have been registered
-	*serviceHooksRegistered = true
-
 	return nil
 }
 
 // Creates an event handler for the specified service config and event name
 func (m *HooksMiddleware) createServiceEventHandler(
-	ctx context.Context,
 	hookType ext.HookType,
 	hookName string,
 	hooksRunner *ext.HooksRunner,
@@ -205,17 +197,4 @@ func (m *HooksMiddleware) createServiceEventHandler(
 	return func(ctx context.Context, eventArgs project.ServiceLifecycleEventArgs) error {
 		return hooksRunner.RunHooks(ctx, hookType, nil, hookName)
 	}
-}
-
-// Gets a value that returns whether or not service hooks have already been registered
-// for the current project config
-// Optionally constructs a new go context that stores a pointer to this value
-func getServiceHooksRegistered(ctx context.Context) (context.Context, *bool) {
-	serviceHooksRegistered, ok := ctx.Value(serviceHooksRegisteredContextKey).(*bool)
-	if !ok {
-		serviceHooksRegistered = convert.RefOf(false)
-		ctx = context.WithValue(ctx, serviceHooksRegisteredContextKey, serviceHooksRegistered)
-	}
-
-	return ctx, serviceHooksRegistered
 }

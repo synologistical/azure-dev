@@ -1,15 +1,18 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/templates"
 	"go.uber.org/multierr"
-	"golang.org/x/exp/slices"
 )
 
 const (
@@ -43,10 +46,17 @@ func (s *TemplateSource) Name() string {
 func (s *TemplateSource) ListTemplates(ctx context.Context) ([]*templates.Template, error) {
 	var devCenterFilter DevCenterFilterPredicate
 	var projectFilter ProjectFilterPredicate
+	var catalogFilter EnvironmentDefinitionFilterPredicate
 
 	if s.config.Name != "" {
 		devCenterFilter = func(dc *devcentersdk.DevCenter) bool {
 			return strings.EqualFold(dc.Name, s.config.Name)
+		}
+	}
+
+	if s.config.Catalog != "" {
+		catalogFilter = func(ed *devcentersdk.EnvironmentDefinition) bool {
+			return strings.EqualFold(ed.CatalogName, s.config.Catalog)
 		}
 	}
 
@@ -90,14 +100,22 @@ func (s *TemplateSource) ListTemplates(ctx context.Context) ([]*templates.Templa
 			}
 
 			for _, envDefinition := range envDefinitions.Value {
+				// Filter out environment definitions that do not match the specified catalog
+				if catalogFilter != nil && !catalogFilter(envDefinition) {
+					continue
+				}
+
 				// We only want to consider environment definitions that have
 				// a repo url parameter as valid templates for azd
 				var repoUrls []string
+				var repoUrlParamId string
 				containsRepoUrl := slices.ContainsFunc(envDefinition.Parameters, func(p devcentersdk.Parameter) bool {
-					if strings.EqualFold(p.Name, "repourl") {
+					if strings.EqualFold(p.Id, "repourl") {
+						repoUrlParamId = p.Id
+
 						// Repo url parameter can support multiple values
 						// Values can either have a default or multiple allowed values but not both
-						if p.Allowed != nil && len(p.Allowed) > 0 {
+						if len(p.Allowed) > 0 {
 							repoUrls = append(repoUrls, p.Allowed...)
 						} else if p.Default != nil {
 							defaultValue, ok := p.Default.(string)
@@ -112,33 +130,39 @@ func (s *TemplateSource) ListTemplates(ctx context.Context) ([]*templates.Templa
 					return false
 				})
 
-				if containsRepoUrl {
-					definitionParts := []string{
-						project.DevCenter.Name,
-						envDefinition.CatalogName,
-						envDefinition.Name,
-					}
-					definitionPath := strings.Join(definitionParts, "/")
+				if !containsRepoUrl {
+					continue
+				}
 
-					// List an available AZD template for each repo url that is referenced in the template
-					for _, url := range repoUrls {
-						templatesChan <- &templates.Template{
-							Id:             url + definitionPath,
-							Name:           envDefinition.Name,
-							Source:         fmt.Sprintf("%s/%s", project.DevCenter.Name, envDefinition.CatalogName),
-							Description:    envDefinition.Description,
-							RepositoryPath: url,
+				definitionParts := []string{
+					project.DevCenter.Name,
+					envDefinition.CatalogName,
+					envDefinition.Name,
+				}
+				definitionPath := strings.Join(definitionParts, "/")
 
-							// Metadata will be used when creating any azd environments that are based on this template
-							Metadata: templates.Metadata{
-								Project: map[string]string{
-									"platform.type":                                     string(PlatformKindDevCenter),
-									fmt.Sprintf("%s.name", ConfigPath):                  project.DevCenter.Name,
-									fmt.Sprintf("%s.catalog", ConfigPath):               envDefinition.CatalogName,
-									fmt.Sprintf("%s.environmentDefinition", ConfigPath): envDefinition.Name,
-								},
+				// List an available AZD template for each repo url that is referenced in the template
+				for _, url := range repoUrls {
+					templatesChan <- &templates.Template{
+						Id:             url + definitionPath,
+						Name:           envDefinition.Name,
+						Source:         fmt.Sprintf("%s/%s", project.DevCenter.Name, envDefinition.CatalogName),
+						Description:    envDefinition.Description,
+						RepositoryPath: url,
+
+						// Metadata will be used when creating any azd environments that are based on this template
+						Metadata: templates.Metadata{
+							Project: map[string]string{
+								"platform.type":                                     string(PlatformKindDevCenter),
+								fmt.Sprintf("%s.name", ConfigPath):                  project.DevCenter.Name,
+								fmt.Sprintf("%s.catalog", ConfigPath):               envDefinition.CatalogName,
+								fmt.Sprintf("%s.environmentDefinition", ConfigPath): envDefinition.Name,
 							},
-						}
+							Config: map[string]string{
+								// Set the repoUrl param so it is not re-prompted by the provision provider
+								fmt.Sprintf("provision.parameters.%s", repoUrlParamId): url,
+							},
+						},
 					}
 				}
 			}

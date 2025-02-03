@@ -5,13 +5,15 @@ package pipeline
 
 import (
 	"context"
-	"os"
+	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 
+	"github.com/azure/azure-dev/cli/azd/pkg/entraid"
 	"github.com/azure/azure-dev/cli/azd/pkg/graphsdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
-	"github.com/azure/azure-dev/cli/azd/pkg/tools/azcli"
 )
 
 // subareaProvider defines the base behavior from any pipeline provider
@@ -87,6 +89,22 @@ type CiPipeline interface {
 	url() string
 }
 
+// configurePipelineOptions holds the configuration options for the configurePipeline method.
+type configurePipelineOptions struct {
+	// provisioningProvider provides the information about eh project infrastructure
+	provisioningProvider *provisioning.Options
+	// secrets are the key-value pairs to be set as secrets in the CI provider
+	secrets map[string]string
+	// variables are the key-value pairs to be set as variables in the CI provider
+	variables map[string]string
+	// projectVariables are the keys defined on the project (azure.yaml) to be collected form the env and set it as
+	// variables in the CI provider when their values are not empty.
+	projectVariables []string
+	// projectSecrets are the keys defined on the project (azure.yaml) to be collected form the env and set it as
+	// secrets in the CI provider when their values are not empty.
+	projectSecrets []string
+}
+
 // CiProvider defines the base behavior for a continuous integration provider.
 type CiProvider interface {
 	// compose the behavior from subareaProvider
@@ -95,9 +113,7 @@ type CiProvider interface {
 	configurePipeline(
 		ctx context.Context,
 		repoDetails *gitRepositoryDetails,
-		provisioningProvider provisioning.Options,
-		additionalSecrets map[string]string,
-		additionalVariables map[string]string,
+		options *configurePipelineOptions,
 	) (CiPipeline, error)
 	// configureConnection use the credential to set up the connection from the pipeline
 	// to Azure
@@ -106,8 +122,8 @@ type CiProvider interface {
 		gitRepo *gitRepositoryDetails,
 		provisioningProvider provisioning.Options,
 		servicePrincipal *graphsdk.ServicePrincipal,
-		authType PipelineAuthType,
-		credentials *azcli.AzureCredentials,
+		credentialOptions *CredentialOptions,
+		credentials *entraid.AzureCredentials,
 	) error
 	// Gets the credential options that should be configured for the provider
 	credentialOptions(
@@ -115,33 +131,124 @@ type CiProvider interface {
 		repoDetails *gitRepositoryDetails,
 		infraOptions provisioning.Options,
 		authType PipelineAuthType,
-	) *CredentialOptions
+		credentials *entraid.AzureCredentials,
+	) (*CredentialOptions, error)
 }
 
-func folderExists(folderPath string) bool {
-	if _, err := os.Stat(folderPath); err == nil {
-		return true
-	}
-	return false
-}
+// mergeProjectVariablesAndSecrets returns the list of variables and secrets to be used in the pipeline
+// The initial values reference azd known values, which are merged with the ones defined on azure.yaml by the user.
+func mergeProjectVariablesAndSecrets(
+	projectVariables, projectSecrets []string,
+	initialVariables, initialSecrets, env map[string]string) (variables, secrets map[string]string) {
+	variables = maps.Clone(initialVariables)
+	secrets = maps.Clone(initialSecrets)
 
-func ymlExists(ymlPath string) bool {
-	info, err := os.Stat(ymlPath)
-	// if it is a file with no error
-	if err == nil && info.Mode().IsRegular() {
-		return true
+	for key, value := range env {
+		if value == "" {
+			// skip empty values
+			continue
+		}
+		if slices.Contains(projectVariables, key) {
+			variables[key] = value
+		}
+		if slices.Contains(projectSecrets, key) {
+			secrets[key] = value
+		}
 	}
-	return false
+
+	return variables, secrets
 }
 
 const (
-	gitHubLabel     string = "github"
-	azdoLabel       string = "azdo"
-	envPersistedKey string = "AZD_PIPELINE_PROVIDER"
+	gitHubDisplayName string = "GitHub"
+	gitHubCode               = "github"
+	gitHubRoot        string = ".github"
+	gitHubWorkflows   string = "workflows"
+	azdoDisplayName   string = "Azure DevOps"
+	azdoCode                 = "azdo"
+	azdoRoot          string = ".azdo"
+	azdoRootAlt       string = ".azuredevops"
+	azdoPipelines     string = "pipelines"
+	envPersistedKey   string = "AZD_PIPELINE_PROVIDER"
 )
 
 var (
-	githubFolder string = filepath.Join(".github", "workflows")
-	azdoFolder   string = filepath.Join(".azdo", "pipelines")
-	azdoYml      string = filepath.Join(azdoFolder, "azure-dev.yml")
+	pipelineFileNames = []string{"azure-dev.yml", "azure-dev.yaml"}
 )
+
+var (
+	pipelineProviderFiles = map[ciProviderType]struct {
+		RootDirectories     []string
+		PipelineDirectories []string
+		Files               []string
+		DefaultFile         string
+		DisplayName         string
+		Code                string
+	}{
+		ciProviderGitHubActions: {
+			RootDirectories:     []string{gitHubRoot},
+			PipelineDirectories: []string{filepath.Join(gitHubRoot, gitHubWorkflows)},
+			Files:               generateFilePaths([]string{filepath.Join(gitHubRoot, gitHubWorkflows)}, pipelineFileNames),
+			DefaultFile:         pipelineFileNames[0],
+			DisplayName:         gitHubDisplayName,
+		},
+		ciProviderAzureDevOps: {
+			RootDirectories:     []string{azdoRoot, azdoRootAlt},
+			PipelineDirectories: []string{filepath.Join(azdoRoot, azdoPipelines), filepath.Join(azdoRootAlt, azdoPipelines)},
+			Files: generateFilePaths([]string{filepath.Join(azdoRoot, azdoPipelines),
+				filepath.Join(azdoRootAlt, azdoPipelines)}, pipelineFileNames),
+			DefaultFile: pipelineFileNames[0],
+			DisplayName: azdoDisplayName,
+		},
+	}
+)
+
+func generateFilePaths(directories []string, fileNames []string) []string {
+	var paths []string
+	for _, dir := range directories {
+		for _, file := range fileNames {
+			paths = append(paths, filepath.Join(dir, file))
+		}
+	}
+	return paths
+}
+
+type ciProviderType string
+
+const (
+	ciProviderGitHubActions ciProviderType = gitHubCode
+	ciProviderAzureDevOps   ciProviderType = azdoCode
+)
+
+func toCiProviderType(provider string) (ciProviderType, error) {
+	result := ciProviderType(provider)
+	if result == ciProviderGitHubActions || result == ciProviderAzureDevOps {
+		return result, nil
+	}
+	return "", fmt.Errorf("invalid ci provider type %s", provider)
+}
+
+type infraProviderType string
+
+const (
+	infraProviderBicep     infraProviderType = "bicep"
+	infraProviderTerraform infraProviderType = "terraform"
+	infraProviderUndefined infraProviderType = ""
+)
+
+func toInfraProviderType(provider string) (infraProviderType, error) {
+	result := infraProviderType(provider)
+	if result == infraProviderBicep || result == infraProviderTerraform || result == infraProviderUndefined {
+		return result, nil
+	}
+	return "", fmt.Errorf("invalid infra provider type %s", provider)
+}
+
+type projectProperties struct {
+	CiProvider    ciProviderType
+	InfraProvider infraProviderType
+	RepoRoot      string
+	HasAppHost    bool
+	BranchName    string
+	AuthType      PipelineAuthType
+}

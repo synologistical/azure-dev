@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package templates
 
 import (
@@ -32,7 +35,7 @@ func jsonTemplates() string {
 
 func Test_NewJsonTemplateSource(t *testing.T) {
 	name := "test"
-	source, err := NewJsonTemplateSource(name, jsonTemplates())
+	source, err := newJsonTemplateSource(name, jsonTemplates())
 	require.Nil(t, err)
 
 	require.Equal(t, name, source.Name())
@@ -41,13 +44,13 @@ func Test_NewJsonTemplateSource(t *testing.T) {
 func Test_NewJsonTemplateSource_InvalidJson(t *testing.T) {
 	name := "test"
 	jsonTemplates := `invalid json`
-	_, err := NewJsonTemplateSource(name, jsonTemplates)
+	_, err := newJsonTemplateSource(name, jsonTemplates)
 	require.Error(t, err)
 }
 
 func Test_JsonTemplateSource_ListTemplates(t *testing.T) {
 	name := "test"
-	source, err := NewJsonTemplateSource(name, jsonTemplates())
+	source, err := newJsonTemplateSource(name, jsonTemplates())
 	require.Nil(t, err)
 
 	templates, err := source.ListTemplates(context.Background())
@@ -57,7 +60,7 @@ func Test_JsonTemplateSource_ListTemplates(t *testing.T) {
 
 func Test_JsonTemplateSource_GetTemplate_MatchFound(t *testing.T) {
 	name := "test"
-	source, err := NewJsonTemplateSource(name, jsonTemplates())
+	source, err := newJsonTemplateSource(name, jsonTemplates())
 	require.Nil(t, err)
 
 	template, err := source.GetTemplate(context.Background(), "owner/template1")
@@ -74,7 +77,7 @@ func Test_JsonTemplateSource_GetTemplate_MatchFound(t *testing.T) {
 
 func Test_JsonTemplateSource_GetTemplate_NoMatchFound(t *testing.T) {
 	name := "test"
-	source, err := NewJsonTemplateSource(name, jsonTemplates())
+	source, err := newJsonTemplateSource(name, jsonTemplates())
 	require.Nil(t, err)
 
 	template, err := source.GetTemplate(context.Background(), "owner/notfound")

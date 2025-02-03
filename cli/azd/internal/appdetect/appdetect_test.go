@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package appdetect
 
 import (
@@ -19,7 +22,7 @@ var testDataFs embed.FS
 // Verify standard detection for all languages and dependencies.
 func TestDetect(t *testing.T) {
 	dir := t.TempDir()
-	err := copyTestDataDir(t, "**", dir)
+	err := copyTestDataDir("**", dir)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -42,6 +45,20 @@ func TestDetect(t *testing.T) {
 					DetectionRule: "Inferred by presence of: pom.xml",
 				},
 				{
+					Language:      Java,
+					Path:          "java-multimodules/application",
+					DetectionRule: "Inferred by presence of: pom.xml",
+					DatabaseDeps: []DatabaseDep{
+						DbMySql,
+						DbPostgres,
+					},
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/library",
+					DetectionRule: "Inferred by presence of: pom.xml",
+				},
+				{
 					Language:      JavaScript,
 					Path:          "javascript",
 					DetectionRule: "Inferred by presence of: package.json",
@@ -54,7 +71,7 @@ func TestDetect(t *testing.T) {
 						JsAngular,
 						JsJQuery,
 						JsReact,
-						JsVue,
+						JsVite,
 					},
 					DatabaseDeps: []DatabaseDep{
 						DbMongo,
@@ -111,6 +128,20 @@ func TestDetect(t *testing.T) {
 					Path:          "java",
 					DetectionRule: "Inferred by presence of: pom.xml",
 				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/application",
+					DetectionRule: "Inferred by presence of: pom.xml",
+					DatabaseDeps: []DatabaseDep{
+						DbMySql,
+						DbPostgres,
+					},
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/library",
+					DetectionRule: "Inferred by presence of: pom.xml",
+				},
 			},
 		},
 		{
@@ -128,6 +159,20 @@ func TestDetect(t *testing.T) {
 				{
 					Language:      Java,
 					Path:          "java",
+					DetectionRule: "Inferred by presence of: pom.xml",
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/application",
+					DetectionRule: "Inferred by presence of: pom.xml",
+					DatabaseDeps: []DatabaseDep{
+						DbMySql,
+						DbPostgres,
+					},
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/library",
 					DetectionRule: "Inferred by presence of: pom.xml",
 				},
 			},
@@ -150,6 +195,20 @@ func TestDetect(t *testing.T) {
 				{
 					Language:      Java,
 					Path:          "java",
+					DetectionRule: "Inferred by presence of: pom.xml",
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/application",
+					DetectionRule: "Inferred by presence of: pom.xml",
+					DatabaseDeps: []DatabaseDep{
+						DbMySql,
+						DbPostgres,
+					},
+				},
+				{
+					Language:      Java,
+					Path:          "java-multimodules/library",
 					DetectionRule: "Inferred by presence of: pom.xml",
 				},
 				{
@@ -178,7 +237,7 @@ func TestDetect(t *testing.T) {
 // Verify docker detection.
 func TestDetectDocker(t *testing.T) {
 	dir := t.TempDir()
-	err := copyTestDataDir(t, "**/dotnet/**", dir)
+	err := copyTestDataDir("**/dotnet/**", dir)
 	require.NoError(t, err)
 
 	err = os.WriteFile(filepath.Join(dir, "dotnet", "Dockerfile"), []byte{}, 0600)
@@ -193,7 +252,8 @@ func TestDetectDocker(t *testing.T) {
 		Path:          filepath.Join(dir, "dotnet"),
 		DetectionRule: "Inferred by presence of: dotnettestapp.csproj, Program.cs",
 		Docker: &Docker{
-			Path: filepath.Join(dir, "dotnet", "Dockerfile"),
+			Path:  filepath.Join(dir, "dotnet", "Dockerfile"),
+			Ports: nil,
 		},
 	})
 }
@@ -204,11 +264,11 @@ func TestDetectNested(t *testing.T) {
 
 	// Use 'src' under root to create further nesting
 	src := filepath.Join(dir, "src")
-	err := copyTestDataDir(t, "**/dotnet/**", src)
+	err := copyTestDataDir("**/dotnet/**", src)
 	require.NoError(t, err)
 
 	// nested directory, but is skipped because of dotnet being one level up
-	err = copyTestDataDir(t, "**/javascript/**", filepath.Join(src, "dotnet"))
+	err = copyTestDataDir("**/javascript/**", filepath.Join(src, "dotnet"))
 	require.NoError(t, err)
 
 	projects, err := Detect(context.Background(), dir)
@@ -222,7 +282,7 @@ func TestDetectNested(t *testing.T) {
 	})
 }
 
-func copyTestDataDir(t *testing.T, glob string, dst string) error {
+func copyTestDataDir(glob string, dst string) error {
 	root := "testdata"
 	return fs.WalkDir(testDataFs, root, func(name string, d fs.DirEntry, err error) error {
 		// If there was some error that was preventing is from walking into the directory, just fail now,

@@ -8,11 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/fatih/color"
 )
 
 type Asker func(p survey.Prompt, response interface{}) error
@@ -105,7 +105,7 @@ func askOnePrompt(p survey.Prompt, response interface{}, isTerminal bool, stdout
 		}
 	}
 
-	if isTerminal && os.Getenv("AZD_DEBUG_FORCE_NO_TTY") != "1" {
+	if isTerminal {
 		opts := []survey.AskOpt{}
 
 		// When asking a question which requires a text response, show the cursor, it helps
@@ -114,15 +114,16 @@ func askOnePrompt(p survey.Prompt, response interface{}, isTerminal bool, stdout
 			opts = append(opts, withShowCursor)
 		}
 
-		survey.InputQuestionTemplate = cInputQuestionTemplate
-
 		opts = append(opts, survey.WithIcons(func(icons *survey.IconSet) {
 			// use bold blue question mark for all questions
 			icons.Question.Format = "blue+b"
+			icons.SelectFocus.Format = "blue+b"
 
 			icons.Help.Format = "black+h"
 			icons.Help.Text = "Hint:"
-			icons.MarkedOption.Format = "red"
+
+			icons.MarkedOption.Text = "[" + color.GreenString("✓") + "]"
+			icons.MarkedOption.Format = ""
 		}))
 
 		return survey.AskOne(p, response, opts...)
@@ -144,6 +145,16 @@ func askOnePrompt(p survey.Prompt, response interface{}, isTerminal bool, stdout
 		if result == "" && v.Default != "" {
 			result = v.Default
 		}
+		*pResponse = result
+		return nil
+	case *survey.Password:
+		var pResponse = response.(*string)
+		fmt.Fprintf(stdout, "%s", v.Message)
+		result, err := readStringNoBuffer(stdin, '\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fmt.Errorf("reading response: %w", err)
+		}
+		result = strings.TrimSpace(result)
 		*pResponse = result
 		return nil
 	case *survey.MultiSelect:
@@ -235,29 +246,32 @@ func askOnePrompt(p survey.Prompt, response interface{}, isTerminal bool, stdout
 	}
 }
 
-// Asker uses this template instead of the default one from survey.InputQuestionTemplate
-// Differences:
-// - Use color blue instead of cyan
-//
-//nolint:lll
-const cInputQuestionTemplate = `
-{{- if .ShowHelp }}{{- color .Config.Icons.Help.Format }}{{ .Config.Icons.Help.Text }} {{ .Help }}{{color "reset"}}{{"\n"}}{{end}}
-{{- color .Config.Icons.Question.Format }}{{ .Config.Icons.Question.Text }} {{color "reset"}}
-{{- color "default+hb"}}{{ .Message }} {{color "reset"}}
-{{- if .ShowAnswer}}
-  {{- color "blue"}}{{.Answer}}{{color "reset"}}{{"\n"}}
-{{- else if .PageEntries -}}
-  {{- .Answer}} [Use arrows to move, enter to select, type to continue]
-  {{- "\n"}}
-  {{- range $ix, $choice := .PageEntries}}
-	{{- if eq $ix $.SelectedIndex }}{{color $.Config.Icons.SelectFocus.Format }}{{ $.Config.Icons.SelectFocus.Text }} {{else}}{{color "default"}}  {{end}}
-	{{- $choice.Value}}
-	{{- color "reset"}}{{"\n"}}
-  {{- end}}
-{{- else }}
-  {{- if or (and .Help (not .ShowHelp)) .Suggest }}{{color "cyan"}}[
-	{{- if and .Help (not .ShowHelp)}}{{ print .Config.HelpInput }} for help {{- if and .Suggest}}, {{end}}{{end -}}
-	{{- if and .Suggest }}{{color "cyan"}}{{ print .Config.SuggestInput }} for suggestions{{end -}}
-  ]{{color "reset"}} {{end}}
-  {{- if .Default}}{{color "white"}}({{.Default}}) {{color "reset"}}{{end}}
-{{- end}}`
+func init() {
+	// blue for everything
+
+	// Customize the input question template:
+	//   - Use blue instead of cyan for answers: {{- color "blue"}}{{.Answer}}
+	//   - Use gray instead of cyan for default value: {{color "black+h"}}({{.Default}})
+	//nolint:lll
+	survey.InputQuestionTemplate = `
+	{{- if .ShowHelp }}{{- color .Config.Icons.Help.Format }}{{ .Config.Icons.Help.Text }} {{ .Help }}{{color "reset"}}{{"\n"}}{{end}}
+	{{- color .Config.Icons.Question.Format }}{{ .Config.Icons.Question.Text }} {{color "reset"}}
+	{{- color "default+hb"}}{{ .Message }} {{color "reset"}}
+	{{- if .ShowAnswer}}
+	  {{- color "blue"}}{{.Answer}}{{color "reset"}}{{"\n"}}
+	{{- else if .PageEntries -}}
+	  {{- .Answer}} [Use arrows to move, enter to select, type to continue]
+	  {{- "\n"}}
+	  {{- range $ix, $choice := .PageEntries}}
+		{{- if eq $ix $.SelectedIndex }}{{color $.Config.Icons.SelectFocus.Format }}{{ $.Config.Icons.SelectFocus.Text }} {{else}}{{color "default"}}  {{end}}
+		{{- $choice.Value}}
+		{{- color "reset"}}{{"\n"}}
+	  {{- end}}
+	{{- else }}
+	  {{- if or (and .Help (not .ShowHelp)) .Suggest }}{{color "cyan"}}[
+		{{- if and .Help (not .ShowHelp)}}{{ print .Config.HelpInput }} for help {{- if and .Suggest}}, {{end}}{{end -}}
+		{{- if and .Suggest }}{{color "cyan"}}{{ print .Config.SuggestInput }} for suggestions{{end -}}
+	  ]{{color "reset"}} {{end}}
+	  {{- if .Default}}{{color "black+h"}}({{.Default}}) {{color "reset"}}{{end}}
+	{{- end}}`
+}

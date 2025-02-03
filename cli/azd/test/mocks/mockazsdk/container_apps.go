@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package mockazsdk
 
 import (
@@ -5,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/appcontainers/armappcontainers/v2"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/appcontainers/armappcontainers/v3"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 )
 
@@ -36,6 +39,36 @@ func MockContainerAppGet(
 		}
 
 		return mocks.CreateHttpResponseWithBody(request, http.StatusOK, response)
+	})
+
+	return mockRequest
+}
+
+func MockContainerAppCreateOrUpdate(
+	mockContext *mocks.MockContext,
+	subscriptionId string,
+	resourceGroup string,
+	appName string,
+	containerApp *armappcontainers.ContainerApp,
+) *http.Request {
+	mockRequest := &http.Request{}
+
+	mockContext.HttpClient.When(func(request *http.Request) bool {
+		return request.Method == http.MethodPut && strings.Contains(
+			request.URL.Path,
+			fmt.Sprintf(
+				"/subscriptions/%s/resourceGroups/%s/providers/Microsoft.App/containerApps/%s",
+				subscriptionId,
+				resourceGroup,
+				appName,
+			),
+		)
+	}).RespondFn(func(request *http.Request) (*http.Response, error) {
+		*mockRequest = *request
+
+		response := armappcontainers.ContainerAppsClientCreateOrUpdateResponse{}
+
+		return mocks.CreateHttpResponseWithBody(request, http.StatusCreated, response)
 	})
 
 	return mockRequest

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package kubectl
 
 import (
@@ -8,17 +11,17 @@ import (
 	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/osutil"
-	"gopkg.in/yaml.v3"
+	"github.com/braydonk/yaml"
 )
 
 // Manages k8s configurations available to the k8s CLI
 type KubeConfigManager struct {
-	cli        KubectlCli
+	cli        *Cli
 	configPath string
 }
 
 // Creates a new instance of the KubeConfigManager
-func NewKubeConfigManager(cli KubectlCli) (*KubeConfigManager, error) {
+func NewKubeConfigManager(cli *Cli) (*KubeConfigManager, error) {
 	kubeConfigDir, err := getKubeConfigDir()
 	if err != nil {
 		return nil, err
@@ -105,14 +108,9 @@ func (kcm *KubeConfigManager) AddOrUpdateContext(
 	contextName string,
 	newKubeConfig *KubeConfig,
 ) (string, error) {
-	_, err := kcm.SaveKubeConfig(ctx, contextName, newKubeConfig)
+	configPath, err := kcm.SaveKubeConfig(ctx, contextName, newKubeConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed write new kube context file: %w", err)
-	}
-
-	configPath, err := kcm.MergeConfigs(ctx, "config", contextName)
-	if err != nil {
-		return "", fmt.Errorf("failed merging KUBE configs: %w", err)
 	}
 
 	return configPath, nil

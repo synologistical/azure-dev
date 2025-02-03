@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
@@ -220,7 +223,7 @@ func Test_BuildCommandsWithAutomaticHelpAndOutputFlags(t *testing.T) {
 func Test_RunDocsFlow(t *testing.T) {
 	container := ioc.NewNestedContainer(nil)
 	testCtx := mocks.NewMockContext(context.Background())
-	container.RegisterSingleton(func() input.Console {
+	container.MustRegisterSingleton(func() input.Console {
 		return testCtx.Console
 	})
 
@@ -248,13 +251,13 @@ func Test_RunDocsFlow(t *testing.T) {
 	cmd.SetArgs([]string{"--docs"})
 	err = cmd.ExecuteContext(*testCtx.Context)
 	require.NoError(t, err)
-	require.Equal(t, cReferenceDocumentationUrl+"root", calledUrl)
+	require.Equal(t, referenceDocumentationUrl+"root", calledUrl)
 }
 
 func Test_RunDocsAndHelpFlow(t *testing.T) {
 	container := ioc.NewNestedContainer(nil)
 	testCtx := mocks.NewMockContext(context.Background())
-	container.RegisterSingleton(func() input.Console {
+	container.MustRegisterSingleton(func() input.Console {
 		return testCtx.Console
 	})
 

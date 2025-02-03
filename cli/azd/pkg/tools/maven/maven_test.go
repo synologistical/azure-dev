@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package maven
 
 import (
@@ -121,7 +124,7 @@ func Test_extractVersion(t *testing.T) {
 			`), ""), nil
 		})
 
-	mvn := NewMavenCli(execMock).(*mavenCli)
+	mvn := NewCli(execMock)
 	placeExecutable(t, mvnwWithExt(), mvn.projectPath)
 	ver, err := mvn.extractVersion(context.Background())
 	require.NoError(t, err)

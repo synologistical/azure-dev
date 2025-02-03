@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcentersdk
 
 import (
@@ -52,10 +55,6 @@ func (b *EntityItemRequestBuilder[T]) createRequest(
 	req, err := runtime.NewRequest(ctx, method, fmt.Sprintf("%s/%s", host, path))
 	if err != nil {
 		return nil, fmt.Errorf("failed creating request: %w", err)
-	}
-
-	if err != nil {
-		return nil, err
 	}
 
 	raw := req.Raw()

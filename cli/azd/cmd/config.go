@@ -1,11 +1,16 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/MakeNowJust/heredoc/v2"
@@ -454,8 +459,11 @@ func (a *configListAlphaAction) Run(ctx context.Context) (*actions.ActionResult,
 	if err != nil {
 		return nil, err
 	}
+
+	featureKeys := slices.Sorted(maps.Keys(features))
 	var alphaOutput []string
-	for _, alphaFeature := range features {
+	for _, alphaFeatureKey := range featureKeys {
+		alphaFeature := features[alphaFeatureKey]
 		alphaOutput = append(alphaOutput,
 			strings.Join(
 				[]string{

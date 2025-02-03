@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/account"
+	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 	"github.com/azure/azure-dev/cli/azd/test/mocks/mockaccount"
-	"github.com/azure/azure-dev/cli/azd/test/mocks/mockazcli"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,7 +20,7 @@ func Test_getSubscriptionOptions(t *testing.T) {
 	t.Run("no default config set", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 		env := environment.New("test")
-		azCli := mockazcli.NewAzCliFromMockContext(mockContext)
+		resourceService := azapi.NewResourceService(mockContext.SubscriptionCredentialProvider, mockContext.ArmClientOptions)
 		mockAccount := &mockaccount.MockAccountManager{
 			Subscriptions: []account.Subscription{
 				{
@@ -32,11 +33,18 @@ func Test_getSubscriptionOptions(t *testing.T) {
 			},
 		}
 
-		prompter := NewDefaultPrompter(env, mockContext.Console, mockAccount, azCli).(*DefaultPrompter)
-		subList, result, err := prompter.getSubscriptionOptions(*mockContext.Context)
+		prompter := NewDefaultPrompter(
+			env,
+			mockContext.Console,
+			mockAccount,
+			resourceService,
+			cloud.AzurePublic(),
+		).(*DefaultPrompter)
+		subList, subs, result, err := prompter.getSubscriptionOptions(*mockContext.Context)
 
 		require.Nil(t, err)
 		require.EqualValues(t, 1, len(subList))
+		require.EqualValues(t, 1, len(subs))
 		require.EqualValues(t, nil, result)
 	})
 
@@ -45,7 +53,7 @@ func Test_getSubscriptionOptions(t *testing.T) {
 		defaultSubId := "SUBSCRIPTION_DEFAULT"
 		mockContext := mocks.NewMockContext(context.Background())
 		env := environment.New("test")
-		azCli := mockazcli.NewAzCliFromMockContext(mockContext)
+		resourceService := azapi.NewResourceService(mockContext.SubscriptionCredentialProvider, mockContext.ArmClientOptions)
 		mockAccount := &mockaccount.MockAccountManager{
 			DefaultLocation:     "location",
 			DefaultSubscription: defaultSubId,
@@ -68,11 +76,18 @@ func Test_getSubscriptionOptions(t *testing.T) {
 			Locations: []account.Location{},
 		}
 
-		prompter := NewDefaultPrompter(env, mockContext.Console, mockAccount, azCli).(*DefaultPrompter)
-		subList, result, err := prompter.getSubscriptionOptions(*mockContext.Context)
+		prompter := NewDefaultPrompter(
+			env,
+			mockContext.Console,
+			mockAccount,
+			resourceService,
+			cloud.AzurePublic(),
+		).(*DefaultPrompter)
+		subList, subs, result, err := prompter.getSubscriptionOptions(*mockContext.Context)
 
 		require.Nil(t, err)
 		require.EqualValues(t, 2, len(subList))
+		require.EqualValues(t, 2, len(subs))
 		require.NotNil(t, result)
 		defSub, ok := result.(string)
 		require.True(t, ok)

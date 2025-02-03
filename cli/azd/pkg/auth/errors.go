@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package auth
 
 import (
@@ -11,10 +14,9 @@ import (
 	"slices"
 
 	msal "github.com/AzureAD/microsoft-authentication-library-for-go/apps/errors"
+	"github.com/azure/azure-dev/cli/azd/internal"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 )
-
-const cLoginCmd = "azd auth login"
-const cDefaultReloginScenario = "reauthentication required"
 
 // ErrNoCurrentUser indicates that the current user is not logged in.
 // This is typically determined by inspecting the stored auth information and credentials on the machine.
@@ -29,52 +31,74 @@ type ReLoginRequiredError struct {
 
 	// The scenario in which the login is required
 	scenario string
+
+	errText string
+
+	helpLink string
 }
 
 // newReLoginRequiredError returns an error if the response indicates that the user needs to reauthenticate.
 // If it is not a reauthentication error, it returns false.
 func newReLoginRequiredError(
 	response *AadErrorResponse,
-	scopes []string) (error, bool) {
+	scopes []string,
+	cloud *cloud.Cloud,
+) (error, bool) {
 	if response == nil {
 		return nil, false
 	}
 
 	//nolint:lll
-	// https://learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes#handling-error-codes-in-your-application
+	// https://learn.microsoft.com/azure/active-directory/develop/reference-aadsts-error-codes#handling-error-codes-in-your-application
 	switch response.Error {
 	case "invalid_grant",
 		"interaction_required":
 		err := ReLoginRequiredError{}
-		err.init(response, scopes)
-		return &err, true
+		err.init(response, scopes, cloud)
+		suggestion := fmt.Sprintf("Suggestion: %s, run `%s` to acquire a new token.", err.scenario, err.loginCmd)
+		if err.helpLink != "" {
+			suggestion += fmt.Sprintf(" See %s for more info.", err.helpLink)
+		}
+		return &internal.ErrorWithSuggestion{
+			Err:        &err,
+			Suggestion: suggestion,
+		}, true
 	}
 
 	return nil, false
 }
 
-func (e *ReLoginRequiredError) init(response *AadErrorResponse, scopes []string) {
-	e.scenario = cDefaultReloginScenario
-	e.loginCmd = cLoginCmd
-	if !matchesLoginScopes(scopes) { // if matching default login scopes, no scopes need to be specified
+func (e *ReLoginRequiredError) init(response *AadErrorResponse, scopes []string, cloud *cloud.Cloud) {
+	e.errText = response.ErrorDescription
+	e.scenario = "reauthentication required"
+	e.loginCmd = "azd auth login"
+	if !matchesLoginScopes(scopes, cloud) { // if matching default login scopes, no scopes need to be specified
 		for _, scope := range scopes {
 			e.loginCmd += fmt.Sprintf(" --scope %s", scope)
 		}
 	}
 
+	// The refresh token has expired or is invalid due to sign-in frequency checks by Conditional Access.
 	if slices.Contains(response.ErrorCodes, 70043) {
 		e.scenario = "login expired"
+	}
+
+	// In a Codespaces environment, `azd auth login` defaults to device code flow, which can cause issues
+	// getting tokens if the Entra tenant has Conditional Access Policies set.
+	if slices.Contains(response.ErrorCodes, 50005) {
+		e.loginCmd += " --use-device-code=false"
+		e.helpLink = "https://aka.ms/azd/troubleshoot/conditional-access-policy"
 	}
 }
 
 func (e *ReLoginRequiredError) Error() string {
-	return fmt.Sprintf("%s, run `%s` to log in", e.scenario, e.loginCmd)
+	return e.errText
 }
 
 // matchesLoginScopes checks if the elements contained in the slice match the scopes acquired during login.
-func matchesLoginScopes(scopes []string) bool {
+func matchesLoginScopes(scopes []string, cloud *cloud.Cloud) bool {
 	for _, scope := range scopes {
-		_, matchLogin := loginScopesMap[scope]
+		_, matchLogin := loginScopesMap(cloud)[scope]
 		if !matchLogin {
 			return false
 		}
@@ -88,7 +112,7 @@ const authFailedPrefix string = "failed to authenticate"
 // An error response from Azure Active Directory.
 //
 // See https://www.rfc-editor.org/rfc/rfc6749#section-5.2 for OAuth 2.0 spec
-// See https://learn.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes for AAD error codes
+// See https://learn.microsoft.com/azure/active-directory/develop/reference-aadsts-error-codes for AAD error codes
 type AadErrorResponse struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package bash
 
 import (
@@ -6,7 +9,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
@@ -44,7 +47,7 @@ func Test_Bash_Execute(t *testing.T) {
 		runResult, err := bashScript.Execute(
 			*mockContext.Context,
 			scriptPath,
-			tools.ExecOptions{Interactive: convert.RefOf(true)},
+			tools.ExecOptions{Interactive: to.Ptr(true)},
 		)
 
 		require.NotNil(t, runResult)
@@ -64,7 +67,7 @@ func Test_Bash_Execute(t *testing.T) {
 		runResult, err := bashScript.Execute(
 			*mockContext.Context,
 			scriptPath,
-			tools.ExecOptions{Interactive: convert.RefOf(true)},
+			tools.ExecOptions{Interactive: to.Ptr(true)},
 		)
 
 		require.Equal(t, 1, runResult.ExitCode)
@@ -75,8 +78,8 @@ func Test_Bash_Execute(t *testing.T) {
 		name  string
 		value tools.ExecOptions
 	}{
-		{name: "Interactive", value: tools.ExecOptions{Interactive: convert.RefOf(true)}},
-		{name: "NonInteractive", value: tools.ExecOptions{Interactive: convert.RefOf(false)}},
+		{name: "Interactive", value: tools.ExecOptions{Interactive: to.Ptr(true)}},
+		{name: "NonInteractive", value: tools.ExecOptions{Interactive: to.Ptr(false)}},
 	}
 
 	for _, test := range tests {

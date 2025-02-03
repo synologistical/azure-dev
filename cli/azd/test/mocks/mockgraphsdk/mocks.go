@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package mockgraphsdk
 
 import (
@@ -6,23 +9,19 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/authorization/armauthorization"
-	"github.com/azure/azure-dev/cli/azd/pkg/azsdk"
-	"github.com/azure/azure-dev/cli/azd/pkg/convert"
 	"github.com/azure/azure-dev/cli/azd/pkg/graphsdk"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
 )
 
 func CreateGraphClient(mockContext *mocks.MockContext) (*graphsdk.GraphClient, error) {
-	clientOptions := CreateDefaultClientOptions(mockContext)
-	clientOptions.Retry.RetryDelay = -1
+	clientOptions := &azcore.ClientOptions{
+		Transport: mockContext.HttpClient,
+		Retry:     policy.RetryOptions{RetryDelay: -1},
+	}
 	return graphsdk.NewGraphClient(mockContext.Credentials, clientOptions)
-}
-
-func CreateDefaultClientOptions(mockContext *mocks.MockContext) *azcore.ClientOptions {
-	return azsdk.NewClientOptionsBuilder().
-		WithTransport(mockContext.HttpClient).
-		BuildCoreClientOptions()
 }
 
 func RegisterApplicationListMock(mockContext *mocks.MockContext, statusCode int, applications []graphsdk.Application) {
@@ -241,9 +240,9 @@ func RegisterRoleAssignmentPutMock(mockContext *mocks.MockContext, statusCode in
 	}).RespondFn(func(request *http.Request) (*http.Response, error) {
 		response := armauthorization.RoleAssignmentsClientCreateResponse{
 			RoleAssignment: armauthorization.RoleAssignment{
-				ID:   convert.RefOf("ASSIGNMENT_ID"),
-				Name: convert.RefOf("ROLE_NAME"),
-				Type: convert.RefOf("ASSIGNMENT_TYPE"),
+				ID:   to.Ptr("ASSIGNMENT_ID"),
+				Name: to.Ptr("ROLE_NAME"),
+				Type: to.Ptr("ASSIGNMENT_TYPE"),
 			},
 		}
 

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 // Package repository provides handling of files in the user's code repository.
 package repository
 
@@ -12,9 +15,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/azure/azure-dev/cli/azd/pkg/alpha"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
-	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning/bicep"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/lazy"
 	"github.com/azure/azure-dev/cli/azd/pkg/osutil"
@@ -31,15 +34,17 @@ import (
 // Initializer handles the initialization of a local repository.
 type Initializer struct {
 	console        input.Console
-	gitCli         git.GitCli
-	dotnetCli      dotnet.DotNetCli
+	gitCli         *git.Cli
+	dotnetCli      *dotnet.Cli
+	features       *alpha.FeatureManager
 	lazyEnvManager *lazy.Lazy[environment.Manager]
 }
 
 func NewInitializer(
 	console input.Console,
-	gitCli git.GitCli,
-	dotnetCli dotnet.DotNetCli,
+	gitCli *git.Cli,
+	dotnetCli *dotnet.Cli,
+	features *alpha.FeatureManager,
 	lazyEnvManager *lazy.Lazy[environment.Manager],
 ) *Initializer {
 	return &Initializer{
@@ -47,6 +52,7 @@ func NewInitializer(
 		gitCli:         gitCli,
 		lazyEnvManager: lazyEnvManager,
 		dotnetCli:      dotnetCli,
+		features:       features,
 	}
 }
 
@@ -92,7 +98,7 @@ func (i *Initializer) Initialize(
 		return err
 	}
 
-	isEmpty, err := isEmptyDir(target)
+	isEmpty, err := osutil.IsDirEmpty(target)
 	if err != nil {
 		return err
 	}
@@ -323,7 +329,7 @@ func (i *Initializer) InitializeMinimal(ctx context.Context, azdCtx *azdcontext.
 		fmt.Sprintf("Created minimal project files at: %s", projectFormatted)+"\n",
 		input.GetStepResultFormat(err))
 
-	isEmpty, err := isEmptyDir(projectDir)
+	isEmpty, err := osutil.IsDirEmpty(projectDir)
 	if err != nil {
 		return err
 	}
@@ -341,7 +347,7 @@ func (i *Initializer) InitializeMinimal(ctx context.Context, azdCtx *azdcontext.
 	// Default infra path if not specified
 	infraPath := projectConfig.Infra.Path
 	if infraPath == "" {
-		infraPath = bicep.Defaults.Path
+		infraPath = project.DefaultPath
 	}
 
 	err = os.MkdirAll(infraPath, osutil.PermissionDirectory)
@@ -351,7 +357,7 @@ func (i *Initializer) InitializeMinimal(ctx context.Context, azdCtx *azdcontext.
 
 	module := projectConfig.Infra.Module
 	if projectConfig.Infra.Module == "" {
-		module = bicep.Defaults.Module
+		module = project.DefaultModule
 	}
 
 	mainPath := filepath.Join(infraPath, module)
@@ -426,7 +432,7 @@ func (i *Initializer) writeFileSafe(
 func (i *Initializer) writeCoreAssets(ctx context.Context, azdCtx *azdcontext.AzdContext) error {
 	// Check to see if `azure.yaml` exists, and if it doesn't, create it.
 	if _, err := os.Stat(azdCtx.ProjectPath()); errors.Is(err, os.ErrNotExist) {
-		_, err = project.New(ctx, azdCtx.ProjectPath(), azdCtx.GetDefaultProjectName())
+		_, err = project.New(ctx, azdCtx.ProjectPath(), azdcontext.ProjectName(azdCtx.ProjectDirectory()))
 		if err != nil {
 			return fmt.Errorf("failed to create a project file: %w", err)
 		}
@@ -520,7 +526,7 @@ func (i *Initializer) writeCoreAssets(ctx context.Context, azdCtx *azdcontext.Az
 // Returns error if an error occurred while prompting, or if the user declines confirmation.
 func (i *Initializer) PromptIfNonEmpty(ctx context.Context, azdCtx *azdcontext.AzdContext) error {
 	dir := azdCtx.ProjectDirectory()
-	isEmpty, err := isEmptyDir(dir)
+	isEmpty, err := osutil.IsDirEmpty(dir)
 	if err != nil {
 		return err
 	}
@@ -586,13 +592,4 @@ func determineDuplicates(source string, target string) ([]string, error) {
 		return nil, fmt.Errorf("enumerating template files: %w", err)
 	}
 	return duplicateFiles, nil
-}
-
-func isEmptyDir(dir string) (bool, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false, fmt.Errorf("determining empty directory: %w", err)
-	}
-
-	return len(entries) == 0, nil
 }

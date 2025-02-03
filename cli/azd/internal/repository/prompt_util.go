@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package repository
 
 import (
@@ -11,18 +14,6 @@ import (
 
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 )
-
-// dirSuggestions provides suggestion completions for directories given the current input directory.
-func dirSuggestions(input string) []string {
-	completions := []string{}
-	matches, _ := filepath.Glob(input + "*")
-	for _, match := range matches {
-		if fs, err := os.Stat(match); err == nil && fs.IsDir() {
-			completions = append(completions, match)
-		}
-	}
-	return completions
-}
 
 // tabWrite transforms tabbed output into formatted strings with a given minimal padding.
 // For more information, refer to the tabwriter package.
@@ -47,9 +38,12 @@ func promptDir(
 	console input.Console,
 	message string) (string, error) {
 	for {
-		path, err := console.Prompt(ctx, input.ConsoleOptions{
+		path, err := console.PromptFs(ctx, input.ConsoleOptions{
 			Message: message,
-			Suggest: dirSuggestions,
+		}, input.FsOptions{
+			SuggestOpts: input.FsSuggestOptions{
+				ExcludeFiles: true,
+			},
 		})
 		if err != nil {
 			return "", err

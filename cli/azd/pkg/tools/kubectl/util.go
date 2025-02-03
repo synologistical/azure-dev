@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package kubectl
 
 import (
@@ -7,8 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/braydonk/yaml"
 	"github.com/sethvargo/go-retry"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -18,7 +21,7 @@ var (
 
 func GetResource[T any](
 	ctx context.Context,
-	cli KubectlCli,
+	cli *Cli,
 	resourceType ResourceType,
 	resourceName string,
 	flags *KubeCliFlags,
@@ -58,7 +61,7 @@ func GetResource[T any](
 
 func GetResources[T any](
 	ctx context.Context,
-	cli KubectlCli,
+	cli *Cli,
 	resourceType ResourceType,
 	flags *KubeCliFlags,
 ) (*List[T], error) {
@@ -99,7 +102,7 @@ type ResourceFilterFn[T comparable] func(resource T) bool
 
 func WaitForResource[T comparable](
 	ctx context.Context,
-	cli KubectlCli,
+	cli *Cli,
 	resourceType ResourceType,
 	resourceFilter ResourceFilterFn[T],
 	readyStatusFilter ResourceFilterFn[T],

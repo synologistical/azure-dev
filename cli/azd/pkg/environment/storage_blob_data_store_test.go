@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package environment
 
 import (
@@ -78,7 +81,7 @@ func Test_StorageBlobDataStore_SaveAndGet(t *testing.T) {
 
 		env1 := New("env1")
 		env1.DotenvSet("key1", "value1")
-		err := dataStore.Save(*mockContext.Context, env1)
+		err := dataStore.Save(*mockContext.Context, env1, nil)
 		require.NoError(t, err)
 
 		env, err := dataStore.Get(*mockContext.Context, "env1")

@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package ext
 
 import (
@@ -111,7 +114,7 @@ func (ed *EventDispatcher[T]) Invoke(ctx context.Context, name Event, eventArgs 
 	}
 
 	if err := action(); err != nil {
-		return fmt.Errorf("failing invoking action '%s', %w", name, err)
+		return err
 	}
 
 	if err := ed.RaiseEvent(ctx, postEventName, eventArgs); err != nil {

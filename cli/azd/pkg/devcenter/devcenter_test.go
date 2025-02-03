@@ -1,10 +1,13 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
 	"context"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra"
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
@@ -123,27 +126,30 @@ func (m *mockDevCenterManager) WritableProjectsWithFilter(
 
 func (m *mockDevCenterManager) Deployment(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 	filter DeploymentFilterPredicate,
 ) (infra.Deployment, error) {
-	args := m.Called(ctx, env, filter)
+	args := m.Called(ctx, config, env, filter)
 	return args.Get(0).(infra.Deployment), args.Error(1)
 }
 
 func (m *mockDevCenterManager) LatestArmDeployment(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 	filter DeploymentFilterPredicate,
-) (*armresources.DeploymentExtended, error) {
-	args := m.Called(ctx, env, filter)
-	return args.Get(0).(*armresources.DeploymentExtended), args.Error(1)
+) (*azapi.ResourceDeployment, error) {
+	args := m.Called(ctx, config, env, filter)
+	return args.Get(0).(*azapi.ResourceDeployment), args.Error(1)
 }
 
 func (m *mockDevCenterManager) Outputs(
 	ctx context.Context,
+	config *Config,
 	env *devcentersdk.Environment,
 ) (map[string]provisioning.OutputParameter, error) {
-	args := m.Called(ctx, env)
+	args := m.Called(ctx, config, env)
 
 	outputs, ok := args.Get(0).(map[string]provisioning.OutputParameter)
 	if ok {

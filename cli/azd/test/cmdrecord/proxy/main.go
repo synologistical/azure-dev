@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package main
 
 import (
@@ -13,8 +16,8 @@ import (
 	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/test/cmdrecord"
+	"github.com/braydonk/yaml"
 	"gopkg.in/dnaeon/go-vcr.v3/recorder"
-	"gopkg.in/yaml.v3"
 )
 
 type ErrExitCode struct {
@@ -103,7 +106,7 @@ func (a *App) record(id int) error {
 		return err
 	}
 	var exitError *exec.ExitError
-	if errors.Is(runErr, exitError) && !exitError.Exited() {
+	if errors.As(runErr, &exitError) && !exitError.Exited() {
 		return errSignalTerm
 	}
 
@@ -222,7 +225,7 @@ func (a *App) passthrough() error {
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()
 	var exitError *exec.ExitError
-	if errors.Is(err, exitError) && !exitError.Exited() {
+	if errors.As(err, &exitError) && !exitError.Exited() {
 		return errSignalTerm
 	}
 
@@ -360,7 +363,7 @@ func main() {
 		// The current process should stop at this point.
 		// This should be unreachable, but in case anything happens, panic on err.
 		panic(err)
-	} else if errors.Is(err, exitCodeErr) {
+	} else if errors.As(err, &exitCodeErr) {
 		os.Exit(exitCodeErr.ExitCode)
 	} else if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

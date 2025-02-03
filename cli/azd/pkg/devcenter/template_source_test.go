@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package devcenter
 
 import (
@@ -5,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resourcegraph/armresourcegraph"
-	"github.com/azure/azure-dev/cli/azd/pkg/azsdk"
+	"github.com/azure/azure-dev/cli/azd/pkg/cloud"
 	"github.com/azure/azure-dev/cli/azd/pkg/devcentersdk"
 	"github.com/azure/azure-dev/cli/azd/pkg/templates"
 	"github.com/azure/azure-dev/cli/azd/test/mocks"
@@ -18,7 +21,7 @@ func Test_TemplateSource_ListTemplates(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 
 		templateList, err := templateSource.ListTemplates(*mockContext.Context)
 		require.NoError(t, err)
@@ -50,7 +53,7 @@ func Test_TemplateSource_ListTemplates(t *testing.T) {
 
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 		mockdevcentersdk.MockListEnvironmentDefinitions(
 			mockContext,
 			"Project1",
@@ -93,7 +96,7 @@ func Test_TemplateSource_ListTemplates(t *testing.T) {
 
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 		mockdevcentersdk.MockListEnvironmentDefinitions(
 			mockContext,
 			"Project1",
@@ -127,7 +130,7 @@ func Test_TemplateSource_ListTemplates(t *testing.T) {
 
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 		mockdevcentersdk.MockListEnvironmentDefinitions(
 			mockContext,
 			"Project1",
@@ -143,7 +146,7 @@ func Test_TemplateSource_ListTemplates(t *testing.T) {
 	t.Run("Fail", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 		// Mock will throw 404 not found for this API call causing a failure
 		mockdevcentersdk.MockListEnvironmentDefinitions(mockContext, "Project2", nil)
 
@@ -157,7 +160,7 @@ func Test_TemplateSource_GetTemplate(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 
 		template, err := templateSource.GetTemplate(*mockContext.Context, "DEV_CENTER_01/SampleCatalog/EnvDefinition_02")
 		require.NoError(t, err)
@@ -167,7 +170,7 @@ func Test_TemplateSource_GetTemplate(t *testing.T) {
 	t.Run("TemplateNotFound", func(t *testing.T) {
 		mockContext := mocks.NewMockContext(context.Background())
 		templateSource := newTemplateSourceForTest(t, mockContext, &Config{}, nil)
-		setupDevCenterSuccessMocks(t, mockContext, templateSource)
+		setupDevCenterSuccessMocks(mockContext, templateSource)
 
 		// Expected to fail because the template path is not found
 		template, err := templateSource.GetTemplate(*mockContext.Context, "DEV_CENTER_01/SampleCatalog/NotFound")
@@ -176,7 +179,7 @@ func Test_TemplateSource_GetTemplate(t *testing.T) {
 	})
 }
 
-func setupDevCenterSuccessMocks(t *testing.T, mockContext *mocks.MockContext, templateSource *TemplateSource) {
+func setupDevCenterSuccessMocks(mockContext *mocks.MockContext, templateSource *TemplateSource) {
 	mockdevcentersdk.MockDevCenterGraphQuery(mockContext, mockDevCenterList)
 	mockdevcentersdk.MockListEnvironmentDefinitions(mockContext, "Project1", mockEnvDefinitions)
 	mockdevcentersdk.MockListEnvironmentDefinitions(mockContext, "Project2", []*devcentersdk.EnvironmentDefinition{})
@@ -201,21 +204,14 @@ func newTemplateSourceForTest(
 	config *Config,
 	manager Manager,
 ) *TemplateSource {
-	coreOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildCoreClientOptions()
-
-	armOptions := azsdk.
-		DefaultClientOptionsBuilder(*mockContext.Context, mockContext.HttpClient, "azd").
-		BuildArmClientOptions()
-
-	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, armOptions)
+	resourceGraphClient, err := armresourcegraph.NewClient(mockContext.Credentials, mockContext.ArmClientOptions)
 	require.NoError(t, err)
 
 	devCenterClient, err := devcentersdk.NewDevCenterClient(
 		mockContext.Credentials,
-		coreOptions,
+		mockContext.CoreClientOptions,
 		resourceGraphClient,
+		cloud.AzurePublic(),
 	)
 
 	require.NoError(t, err)

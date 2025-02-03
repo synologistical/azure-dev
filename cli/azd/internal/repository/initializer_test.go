@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package repository
 
 import (
@@ -12,6 +15,8 @@ import (
 	"testing"
 
 	"github.com/MakeNowJust/heredoc/v2"
+	"github.com/azure/azure-dev/cli/azd/pkg/alpha"
+	"github.com/azure/azure-dev/cli/azd/pkg/config"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment"
 	"github.com/azure/azure-dev/cli/azd/pkg/environment/azdcontext"
 	"github.com/azure/azure-dev/cli/azd/pkg/exec"
@@ -57,8 +62,9 @@ func Test_Initializer_Initialize(t *testing.T) {
 
 			i := NewInitializer(
 				mockContext.Console,
-				git.NewGitCli(mockContext.CommandRunner),
-				dotnet.NewDotNetCli(mockContext.CommandRunner),
+				git.NewCli(mockContext.CommandRunner),
+				dotnet.NewCli(mockContext.CommandRunner),
+				mockContext.AlphaFeaturesManager,
 				lazy.From[environment.Manager](mockEnv),
 			)
 			err := i.Initialize(*mockContext.Context, azdCtx, &templates.Template{RepositoryPath: "local"}, "")
@@ -101,8 +107,9 @@ func Test_Initializer_DevCenter(t *testing.T) {
 
 	i := NewInitializer(
 		mockContext.Console,
-		git.NewGitCli(mockContext.CommandRunner),
-		dotnet.NewDotNetCli(mockContext.CommandRunner),
+		git.NewCli(mockContext.CommandRunner),
+		dotnet.NewCli(mockContext.CommandRunner),
+		mockContext.AlphaFeaturesManager,
 		lazy.From[environment.Manager](mockEnv),
 	)
 	err := i.Initialize(*mockContext.Context, azdCtx, template, "")
@@ -171,8 +178,9 @@ func Test_Initializer_InitializeWithOverwritePrompt(t *testing.T) {
 
 			i := NewInitializer(
 				console,
-				git.NewGitCli(mockRunner),
-				dotnet.NewDotNetCli(mockRunner),
+				git.NewCli(mockRunner),
+				dotnet.NewCli(mockRunner),
+				alpha.NewFeaturesManagerWithConfig(config.NewEmptyConfig()),
 				lazy.From[environment.Manager](mockEnv),
 			)
 			err = i.Initialize(context.Background(), azdCtx, &templates.Template{RepositoryPath: "local"}, "")
@@ -291,7 +299,7 @@ func verifyTemplateCopied(
 
 func verifyExecutableFilePermissions(t *testing.T,
 	ctx context.Context,
-	git git.GitCli,
+	git *git.Cli,
 	repoPath string,
 	expectedFiles []string) {
 	output, err := git.ListStagedFiles(ctx, repoPath)
@@ -375,7 +383,10 @@ func Test_Initializer_WriteCoreAssets(t *testing.T) {
 			envManager := &mockenv.MockEnvManager{}
 			envManager.On("Save", mock.Anything, mock.Anything).Return(nil)
 
-			i := NewInitializer(console, git.NewGitCli(realRunner), nil, lazy.From[environment.Manager](envManager))
+			i := NewInitializer(
+				console, git.NewCli(realRunner), nil,
+				alpha.NewFeaturesManagerWithConfig(config.NewEmptyConfig()),
+				lazy.From[environment.Manager](envManager))
 			err := i.writeCoreAssets(context.Background(), azdCtx)
 			require.NoError(t, err)
 
@@ -435,7 +446,7 @@ func verifyFileContent(t *testing.T, file string, content string) {
 }
 
 func verifyProjectFile(t *testing.T, azdCtx *azdcontext.AzdContext, content string) {
-	content = strings.Replace(content, "<project>", azdCtx.GetDefaultProjectName(), 1)
+	content = strings.Replace(content, "<project>", azdcontext.ProjectName(azdCtx.ProjectDirectory()), 1)
 	verifyFileContent(t, azdCtx.ProjectPath(), content)
 
 	_, err := project.Load(context.Background(), azdCtx.ProjectPath())
@@ -604,7 +615,7 @@ func TestInitializer_PromptIfNonEmpty(t *testing.T) {
 			dir := t.TempDir()
 			console := mockinput.NewMockConsole()
 			cmdRun := mockexec.NewMockCommandRunner()
-			gitCli := git.NewGitCli(cmdRun)
+			gitCli := git.NewCli(cmdRun)
 
 			// create files
 			for _, file := range tt.dir.files {

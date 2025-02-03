@@ -1,19 +1,22 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package appdetect
 
 import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
-
-	"golang.org/x/exp/maps"
-	"golang.org/x/exp/slices"
 )
 
 type PackagesJson struct {
-	Dependencies map[string]string `json:"dependencies"`
+	Dependencies    map[string]string `json:"dependencies"`
+	DevDependencies map[string]string `json:"devDependencies"`
 }
 
 type javaScriptDetector struct {
@@ -44,6 +47,7 @@ func (nd *javaScriptDetector) DetectProject(ctx context.Context, path string, en
 			}
 
 			angularAdded := false
+			viteAdded := false
 			databaseDepMap := map[DatabaseDep]struct{}{}
 
 			for dep := range packagesJson.Dependencies {
@@ -52,8 +56,11 @@ func (nd *javaScriptDetector) DetectProject(ctx context.Context, path string, en
 					project.Dependencies = append(project.Dependencies, JsReact)
 				case "jquery":
 					project.Dependencies = append(project.Dependencies, JsJQuery)
-				case "vue":
-					project.Dependencies = append(project.Dependencies, JsVue)
+				case "vite":
+					project.Dependencies = append(project.Dependencies, JsVite)
+					viteAdded = true
+				case "next":
+					project.Dependencies = append(project.Dependencies, JsNext)
 				default:
 					if strings.HasPrefix(dep, "@angular") && !angularAdded {
 						project.Dependencies = append(project.Dependencies, JsAngular)
@@ -75,15 +82,24 @@ func (nd *javaScriptDetector) DetectProject(ctx context.Context, path string, en
 				}
 			}
 
-			if len(databaseDepMap) > 0 {
-				project.DatabaseDeps = maps.Keys(databaseDepMap)
-				slices.SortFunc(project.DatabaseDeps, func(a, b DatabaseDep) bool {
-					return string(a) < string(b)
-				})
+			for dep := range packagesJson.DevDependencies {
+				switch dep {
+				case "vite":
+					if !viteAdded {
+						project.Dependencies = append(project.Dependencies, JsVite)
+					}
+				}
 			}
 
-			slices.SortFunc(project.Dependencies, func(a, b Dependency) bool {
-				return string(a) < string(b)
+			if len(databaseDepMap) > 0 {
+				project.DatabaseDeps = slices.SortedFunc(maps.Keys(databaseDepMap),
+					func(a, b DatabaseDep) int {
+						return strings.Compare(string(a), string(b))
+					})
+			}
+
+			slices.SortFunc(project.Dependencies, func(a, b Dependency) int {
+				return strings.Compare(string(a), string(b))
 			})
 
 			tsFiles := 0

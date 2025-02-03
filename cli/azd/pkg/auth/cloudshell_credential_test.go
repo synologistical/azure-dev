@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package auth
 
 import (
@@ -14,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const cSuccessfulTokenResponse = `{
+const successfulTokenResponse = `{
 	"access_token": "sample-access-token",
 	"refresh_token": "",
 	"expires_in": "123",
@@ -63,7 +66,7 @@ func TestCloudShellCredentialGetToken(t *testing.T) {
 			request.FormValue("resource") == "https://management.azure.com/"
 	}).Respond(&http.Response{
 		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewBufferString(cSuccessfulTokenResponse)),
+		Body:       io.NopCloser(bytes.NewBufferString(successfulTokenResponse)),
 	})
 
 	token, err = cred.GetToken(*mockContext.Context, policy.TokenRequestOptions{

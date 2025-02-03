@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package repository
 
 import (
@@ -35,7 +38,7 @@ func TestInitializer_infraSpecFromDetect(t *testing.T) {
 				Services: []scaffold.ServiceSpec{
 					{
 						Name:    "dotnet",
-						Port:    80,
+						Port:    8080,
 						Backend: &scaffold.Backend{},
 					},
 				},
@@ -162,6 +165,10 @@ func TestInitializer_infraSpecFromDetect(t *testing.T) {
 				},
 			},
 			interactions: []string{
+				"my app db",
+				"n",
+				"my$special$db",
+				"n",
 				"myappdb", // fill in db name
 			},
 			want: scaffold.InfraSpec{
@@ -204,12 +211,13 @@ func TestInitializer_infraSpecFromDetect(t *testing.T) {
 				console: input.NewConsole(
 					false,
 					false,
-					os.Stdout,
+					input.Writers{Output: os.Stdout},
 					input.ConsoleHandles{
 						Stderr: os.Stderr,
 						Stdin:  strings.NewReader(strings.Join(tt.interactions, "\n") + "\n"),
 						Stdout: os.Stdout,
 					},
+					nil,
 					nil),
 			}
 

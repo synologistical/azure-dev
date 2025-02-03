@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package installer
 
 import (
@@ -5,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 )
-
-const cInstalledByFileName = ".installed-by.txt"
 
 type InstallType string
 
@@ -61,7 +62,7 @@ func RawInstalledBy() string {
 	}
 
 	exeDir := filepath.Dir(resolvedPath)
-	installedByFile := filepath.Join(exeDir, cInstalledByFileName)
+	installedByFile := filepath.Join(exeDir, ".installed-by.txt")
 
 	bytes, err := os.ReadFile(installedByFile)
 	if err != nil {

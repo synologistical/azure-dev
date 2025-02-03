@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package auth
 
 import (
@@ -10,7 +13,6 @@ import (
 // MultiTenantCredentialProvider provides token credentials for different tenants.
 //
 // Only use this if you need to perform multi-tenant operations.
-// A default azcore.TokenCredential is registered in application that is scoped to the correct environment tenant.
 type MultiTenantCredentialProvider interface {
 	// Gets an authenticated token credential for the given tenant. If tenantId is empty, uses the default home tenant.
 	GetTokenCredential(ctx context.Context, tenantId string) (azcore.TokenCredential, error)
@@ -46,7 +48,7 @@ func (t *multiTenantCredentialProvider) GetTokenCredential(
 		return nil, err
 	}
 
-	if _, err := EnsureLoggedInCredential(ctx, credential); err != nil {
+	if _, err := EnsureLoggedInCredential(ctx, credential, t.auth.cloud); err != nil {
 		return nil, err
 	}
 

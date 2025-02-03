@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package templates
 
 import (
@@ -19,7 +22,7 @@ func Test_NewFileTemplateSource_FileExists(t *testing.T) {
 	err = os.WriteFile(path, []byte(jsonTemplates()), osutil.PermissionFile)
 	require.Nil(t, err)
 
-	source, err := NewFileTemplateSource(name, path)
+	source, err := newFileTemplateSource(name, path)
 	require.Nil(t, err)
 
 	require.Equal(t, name, source.Name())
@@ -38,7 +41,7 @@ func Test_NewFileTemplateSource_InvalidJson(t *testing.T) {
 	err = os.WriteFile(path, []byte(invalidJson), osutil.PermissionFile)
 	require.Nil(t, err)
 
-	_, err = NewFileTemplateSource(name, path)
+	_, err = newFileTemplateSource(name, path)
 	require.Error(t, err)
 
 	err = os.Remove(path)
@@ -48,6 +51,6 @@ func Test_NewFileTemplateSource_InvalidJson(t *testing.T) {
 func Test_NewFileTemplateSource_FileDoesNotExist(t *testing.T) {
 	name := "test"
 	path := "testdata/nonexistent.json"
-	_, err := NewFileTemplateSource(name, path)
+	_, err := newFileTemplateSource(name, path)
 	require.Error(t, err)
 }

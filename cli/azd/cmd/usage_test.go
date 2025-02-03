@@ -1,8 +1,10 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 package cmd
 
 import (
 	"bytes"
-	"context"
 	"html/template"
 	"strings"
 	"testing"
@@ -22,7 +24,7 @@ import (
 func TestUsage(t *testing.T) {
 	// disable rich formatting output
 	t.Setenv("TERM", "dumb")
-	root := NewRootCmd(context.Background(), false, nil)
+	root := NewRootCmd(false, nil, nil)
 
 	usageSnapshot(t, root)
 }
